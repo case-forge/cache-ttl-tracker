@@ -1,0 +1,6 @@
+# Per-platform binaries are downloaded on first run (bin/cache-ttl-tracker,
+# the dispatcher, fetches them from this repo's GitHub Releases) or built
+# locally via `make build`/`make release` -- never committed, so they don't
+# grow git history forever. Only the dispatcher script itself is tracked.
+bin/cache-ttl-tracker-*
+bin/*.download

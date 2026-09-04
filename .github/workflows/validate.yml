@@ -1,0 +1,41 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sanity-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: JSON validity (plugin.json, hooks.json)
+        run: |
+          jq empty .claude-plugin/plugin.json
+          jq empty hooks/hooks.json
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt check
+        run: |
+          test -z "$(gofmt -l .)" || (echo "gofmt needs to be run on:" && gofmt -l . && exit 1)
+
+      - name: go test
+        run: go test ./...
+
+      - name: Build the plugin binary
+        run: go build -o /tmp/cache-ttl-tracker-ci-build ./cmd/cache-ttl-tracker
+
+      - name: End-to-end smoke test (hook writes state, statusline reads it)
+        run: |
+          set -e
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          echo '{"session_id":"ci-smoke","hook_event_name":"Stop"}' | /tmp/cache-ttl-tracker-ci-build track
+          test -f "$HOME/.claude/cache-ttl-track-core/ci-smoke.json"
+          echo '{"session_id":"ci-smoke","model":{"id":"claude-sonnet-5","display_name":"Sonnet 5"},"transcript_path":"/nonexistent"}' | /tmp/cache-ttl-tracker-ci-build statusline

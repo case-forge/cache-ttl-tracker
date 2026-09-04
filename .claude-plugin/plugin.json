@@ -1,0 +1,46 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "cache-ttl-tracker",
+  "version": "1.0.0",
+  "description": "Shows live in your statusline whether your next message hits a warm prompt cache or triggers an expensive rebuild. SETUP: the statusline needs one command after install (`bin/cache-ttl-tracker install`, or ask Claude to set it up), because Claude Code does not let plugins register a statusline themselves. The plugin prompts you for this on session start until it is configured.",
+  "author": {
+    "name": "CaseForge",
+    "email": "271531355+case-forge@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/case-forge/cache-ttl-tracker",
+  "repository": "https://github.com/case-forge/cache-ttl-tracker",
+  "license": "MIT",
+  "userConfig": {
+    "display_tz": {
+      "type": "string",
+      "title": "Statusline display timezone",
+      "description": "IANA zone, e.g. Europe/London. The cache-freshness math stays in UTC regardless; this only affects the clock shown. Defaults to UTC.",
+      "default": "UTC"
+    },
+    "context_limit": {
+      "type": "number",
+      "title": "Context window override",
+      "description": "Override the auto-detected context window size (tokens), if the built-in per-model table is wrong for your setup."
+    },
+    "show_full_price": {
+      "type": "boolean",
+      "title": "Show full-price segment",
+      "description": "Statusline segment showing the token count that will reprice at full input rate next turn. Off by default: useful to someone actively watching cache efficiency, not everyday-useful.",
+      "default": false
+    },
+    "show_200k_check": {
+      "type": "boolean",
+      "title": "200k calibration check (dev only)",
+      "description": "For people developing/debugging this plugin's own context-size estimate against the API's built-in 200k-token flag. Not useful for everyday use, and turning it on does not make the statusline more accurate for you, so leave this off unless you're working on this plugin's code.",
+      "default": false
+    }
+  },
+  "keywords": [
+    "cache",
+    "prompt-cache",
+    "statusline",
+    "hooks",
+    "cost",
+    "observability"
+  ]
+}

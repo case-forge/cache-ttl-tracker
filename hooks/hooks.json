@@ -1,0 +1,50 @@
+{
+  "description": "Approximate prompt-cache freshness tracking (no API exposes real cache state): PostToolUse/Stop/PreCompact hooks record cache-touch timestamps per session, paired with a statusline showing warm/cooling/cold and time-to-expiry.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cache-ttl-tracker\" track",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cache-ttl-tracker\" track",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cache-ttl-tracker\" track",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cache-ttl-tracker\" session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
