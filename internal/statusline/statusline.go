@@ -96,35 +96,19 @@ func inputKeysSum(usage map[string]any) int {
 	return asInt(usage["input_tokens"]) + asInt(usage["cache_creation_input_tokens"]) + asInt(usage["cache_read_input_tokens"])
 }
 
-// ContextLimits maps a needle found in the model id to its context window.
-// Opus 5 and Fable 5 are 1M; Haiku 4.5 is 200k, the one entry not 1M, so a
-// flat default would render a Haiku session at a fifth of its true
-// fullness. The statusline payload carries only a boolean
-// (exceeds_200k_tokens), not a number or a limit, so the limit is inferred
-// from the model id and can be overridden via userConfig.
-var ContextLimits = []struct {
-	Needle string
-	Limit  int
-}{
-	{"haiku", 200_000},
-	{"sonnet", 1_000_000},
-	{"opus", 1_000_000},
-	{"fable", 1_000_000},
-}
-
-const DefaultContextLimit = 1_000_000
-
 // Payload is the statusLine command's stdin JSON.
 type Payload struct {
-	SessionID         string     `json:"session_id"`
-	TranscriptPath    string     `json:"transcript_path"`
-	Model             *ModelInfo `json:"model"`
-	Exceeds200kTokens *bool      `json:"exceeds_200k_tokens"`
-	Version           string     `json:"version"`
-	Cwd               string     `json:"cwd"`
-	Workspace         *struct {
+	SessionID      string     `json:"session_id"`
+	TranscriptPath string     `json:"transcript_path"`
+	Model          *ModelInfo `json:"model"`
+	Version        string     `json:"version"`
+	Cwd            string     `json:"cwd"`
+	Workspace      *struct {
 		CurrentDir string `json:"current_dir"`
 	} `json:"workspace"`
+	ContextWindow *struct {
+		Size int `json:"context_window_size"`
+	} `json:"context_window"`
 }
 
 func (p Payload) workDir() string {
@@ -401,7 +385,6 @@ func envBool(name string) bool {
 }
 
 func showFullPrice() bool { return envBool("CLAUDE_PLUGIN_OPTION_SHOW_FULL_PRICE") }
-func show200kCheck() bool { return envBool("CLAUDE_PLUGIN_OPTION_SHOW_200K_CHECK") }
 
 func displayTZ() *time.Location {
 	name := strings.TrimSpace(os.Getenv("CLAUDE_PLUGIN_OPTION_DISPLAY_TZ"))
@@ -415,19 +398,21 @@ func displayTZ() *time.Location {
 	return loc
 }
 
+// ContextLimit is the window the percentage is against: the user's override
+// if set, otherwise the size Claude Code reports for the session, otherwise 0
+// (unknown). It is deliberately not inferred from the model id: Claude Code
+// knows the window it actually opened (a 1M variant, a gateway's own limit),
+// and a table of model names goes stale with every release.
 func ContextLimit(payload Payload) int {
 	if override := strings.TrimSpace(os.Getenv("CLAUDE_PLUGIN_OPTION_CONTEXT_LIMIT")); override != "" && isDigits(override) {
 		if n, err := strconv.Atoi(override); err == nil && n > 0 {
 			return n
 		}
 	}
-	model := strings.ToLower(payload.modelID())
-	for _, cl := range ContextLimits {
-		if strings.Contains(model, cl.Needle) {
-			return cl.Limit
-		}
+	if payload.ContextWindow != nil && payload.ContextWindow.Size > 0 {
+		return payload.ContextWindow.Size
 	}
-	return DefaultContextLimit
+	return 0
 }
 
 func isDigits(s string) bool {
@@ -537,6 +522,11 @@ func ContextSegment(payload Payload, scan ScanResult) string {
 	}
 	tokens := *scan.ContextTokens
 	limit := ContextLimit(payload)
+	if limit == 0 {
+		// No window reported (an older Claude Code): the count is still true,
+		// a percentage would be a guess.
+		return fmt.Sprintf("  %scontext %s%s", Dim, formatDecimalMillions(tokens), Reset)
+	}
 	pct := int(math.Round(100 * float64(tokens) / float64(limit)))
 	if pct > 100 {
 		pct = 100
@@ -602,29 +592,6 @@ func ElapsedClock(elapsed float64) string {
 	}
 	seconds := int(elapsed) % 60
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
-}
-
-// show200kCheck gates a temporary calibration segment: cross-checking our
-// own token count against the harness's own exceeds_200k_tokens boolean.
-// Rendering only on *disagreement* makes this a silent audit: no output
-// means our arithmetic agrees with the harness. Opt-in and off by default:
-// this only proves anything while someone is deliberately parked near the
-// 200k boundary watching for it.
-func LimitCheckSegment(payload Payload, scan ScanResult) string {
-	if !show200kCheck() {
-		return ""
-	}
-	if payload.Exceeds200kTokens == nil {
-		return ""
-	}
-	if scan.ContextTokens == nil || *scan.ContextTokens == PostCompact {
-		return ""
-	}
-	tokens := *scan.ContextTokens
-	if *payload.Exceeds200kTokens == (tokens > 200_000) {
-		return ""
-	}
-	return fmt.Sprintf("  %s200k flag disagrees%s", Red, Reset)
 }
 
 // ModelSwitched reports whether the model has changed to one with no cache
@@ -717,7 +684,7 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	// nothing else on screen.
 	model := ModelSegment(payload)
 	context := ContextSegment(payload, scan)
-	trailer := FullPriceSegment(scan) + context + LimitCheckSegment(payload, scan)
+	trailer := FullPriceSegment(scan) + context
 
 	stateDir := state.Dir(home)
 	statePath := filepath.Join(stateDir, sessionID+".json")

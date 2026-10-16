@@ -27,12 +27,6 @@
       "title": "Show full-price segment",
       "description": "Statusline segment showing the token count that will reprice at full input rate next turn. Off by default: useful to someone actively watching cache efficiency, not everyday-useful.",
       "default": false
-    },
-    "show_200k_check": {
-      "type": "boolean",
-      "title": "200k calibration check (dev only)",
-      "description": "For people developing/debugging this plugin's own context-size estimate against the API's built-in 200k-token flag. Not useful for everyday use, and turning it on does not make the statusline more accurate for you, so leave this off unless you're working on this plugin's code.",
-      "default": false
     }
   },
   "keywords": [

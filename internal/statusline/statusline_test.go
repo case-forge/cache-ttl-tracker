@@ -17,11 +17,9 @@ import (
 func init() {
 	// The opt-in segments are read fresh from the environment on every
 	// call (unlike the Python original, which froze them as module-level
-	// constants at import time); see FullPriceSegment/LimitCheckSegment.
-	// Setting them here just saves every test that wants them on from
-	// calling t.Setenv individually.
+	// constants at import time); see FullPriceSegment. Setting it here just
+	// saves every test that wants it on from calling t.Setenv individually.
 	os.Setenv("CLAUDE_PLUGIN_OPTION_SHOW_FULL_PRICE", "1")
-	os.Setenv("CLAUDE_PLUGIN_OPTION_SHOW_200K_CHECK", "1")
 }
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -147,41 +145,55 @@ func TestOnlyTheTailIsRead(t *testing.T) {
 
 // --- the ceiling the percentage is against --------------------------------
 
-func TestOpusAndSonnetAreOneMillion(t *testing.T) {
-	for _, model := range []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5"} {
-		if got := ContextLimit(Payload{Model: &ModelInfo{ID: model}}); got != 1_000_000 {
-			t.Errorf("%s: got %d, want 1_000_000", model, got)
+func windowPayload(size int) Payload {
+	return Payload{ContextWindow: &struct {
+		Size int `json:"context_window_size"`
+	}{Size: size}}
+}
+
+func TestTheWindowIsWhatClaudeCodeReports(t *testing.T) {
+	for _, size := range []int{200_000, 1_000_000, 750_000} {
+		if got := ContextLimit(windowPayload(size)); got != size {
+			t.Errorf("got %d, want %d", got, size)
 		}
 	}
 }
 
-func TestHaikuIsTwoHundredThousand(t *testing.T) {
-	got := ContextLimit(Payload{Model: &ModelInfo{ID: "claude-haiku-4-5-20251001"}})
-	if got != 200_000 {
-		t.Errorf("got %d, want 200_000", got)
+func TestTheModelIDIsNotConsultedForTheWindow(t *testing.T) {
+	p := Payload{Model: &ModelInfo{ID: "claude-haiku-4-5-20251001"}}
+	if got := ContextLimit(p); got != 0 {
+		t.Errorf("got %d, want 0 (unknown) when no window is reported", got)
 	}
 }
 
-func TestAnUnknownModelFallsBackRatherThanCrashing(t *testing.T) {
-	if got := ContextLimit(Payload{Model: &ModelInfo{ID: "something-new"}}); got != DefaultContextLimit {
-		t.Errorf("got %d, want default", got)
-	}
-	if got := ContextLimit(Payload{}); got != DefaultContextLimit {
-		t.Errorf("got %d, want default", got)
+func TestNoWindowReportedMeansUnknownNotAGuess(t *testing.T) {
+	for _, p := range []Payload{{}, windowPayload(0), windowPayload(-5)} {
+		if got := ContextLimit(p); got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
 	}
 }
 
 func TestTheLimitCanBeOverridden(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_OPTION_CONTEXT_LIMIT", "500000")
-	if got := ContextLimit(Payload{Model: &ModelInfo{ID: "claude-opus-5"}}); got != 500_000 {
-		t.Errorf("got %d, want 500000", got)
+	if got := ContextLimit(windowPayload(1_000_000)); got != 500_000 {
+		t.Errorf("got %d, want 500000: the override beats the reported window", got)
 	}
 }
 
 func TestAJunkOverrideIsIgnored(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_OPTION_CONTEXT_LIMIT", "lots")
-	if got := ContextLimit(Payload{Model: &ModelInfo{ID: "claude-opus-5"}}); got != 1_000_000 {
+	if got := ContextLimit(windowPayload(1_000_000)); got != 1_000_000 {
 		t.Errorf("got %d, want 1_000_000", got)
+	}
+}
+
+func TestWithoutAWindowTheSegmentShowsTheCountAndNoPercentage(t *testing.T) {
+	dir := t.TempDir()
+	path := writeLines(t, dir, "session.jsonl", usageLine(nil))
+	seg := plain(ContextSegment(Payload{TranscriptPath: path}, ScanTranscript(path, "")))
+	if strings.TrimSpace(seg) != "context 222k" {
+		t.Errorf("got %q", seg)
 	}
 }
 
@@ -190,7 +202,9 @@ func TestAJunkOverrideIsIgnored(t *testing.T) {
 func TestTheSegmentShowsTokensCeilingAndPercentage(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "session.jsonl", usageLine(nil))
-	payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-opus-5"}
 	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
 	if strings.TrimSpace(seg) != "context 222k/1M 22%" {
 		t.Errorf("got %q", seg)
@@ -200,7 +214,9 @@ func TestTheSegmentShowsTokensCeilingAndPercentage(t *testing.T) {
 func TestMillionsAreShownWithTwoDecimals(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "m.jsonl", usageLine(map[string]any{"cache_read_input_tokens": 1240000}))
-	payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-opus-5"}
 	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
 	if !strings.Contains(seg, "1.24M/1M") {
 		t.Errorf("got %q, want 1.24M/1M", seg)
@@ -215,7 +231,9 @@ func TestColourEscalatesWithFullness(t *testing.T) {
 	colourAt := func(tokens int) string {
 		path := writeLines(t, dir, strconv.Itoa(tokens)+".jsonl",
 			usageLine(map[string]any{"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}))
-		payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+		payload := windowPayload(1_000_000)
+		payload.TranscriptPath = path
+		payload.Model = &ModelInfo{ID: "claude-opus-5"}
 		return ContextSegment(payload, ScanTranscript(path, ""))
 	}
 	if !strings.Contains(colourAt(220_000), Green) {
@@ -268,7 +286,9 @@ func TestACompactionNewerThanTheLastUsageBlockSuppressesTheFigure(t *testing.T) 
 	if got == nil || *got != PostCompact {
 		t.Errorf("got %v, want PostCompact", got)
 	}
-	payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-opus-5"}
 	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
 	if strings.TrimSpace(seg) != "context: just compacted" {
 		t.Errorf("got %q", seg)
@@ -373,7 +393,9 @@ func TestColourDirectionMatchesTheCacheClock(t *testing.T) {
 	ctxColour := func(tokens int) string {
 		path := writeLines(t, dir, "c"+strconv.Itoa(tokens)+".jsonl",
 			usageLine(map[string]any{"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}))
-		payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+		payload := windowPayload(1_000_000)
+		payload.TranscriptPath = path
+		payload.Model = &ModelInfo{ID: "claude-opus-5"}
 		return ContextSegment(payload, ScanTranscript(path, ""))
 	}
 	if !strings.Contains(ctxColour(50_000), Green) {
@@ -939,36 +961,4 @@ func TestTheClockIsNotCapped(t *testing.T) {
 	}
 }
 
-// --- the 200k cross-check (temporary) -------------------------------------------
-
-func boolPtr(b bool) *bool { return &b }
-func intPtr(n int) *int    { return &n }
-
-func TestThe200kCheckIsSilentWhenOurCountAgrees(t *testing.T) {
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(false)}, ScanResult{ContextTokens: intPtr(100000)}); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: intPtr(300000)}); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestThe200kCheckSpeaksUpOnDisagreement(t *testing.T) {
-	out := plain(LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: intPtr(100000)}))
-	if !strings.Contains(out, "200k flag disagrees") {
-		t.Errorf("got %q", out)
-	}
-}
-
-func TestThe200kCheckStaysQuietWithoutAReadingToCompare(t *testing.T) {
-	pc := PostCompact
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: &pc}); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: nil}); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := LimitCheckSegment(Payload{}, ScanResult{ContextTokens: intPtr(100000)}); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
+func intPtr(n int) *int { return &n }

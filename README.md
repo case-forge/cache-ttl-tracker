@@ -11,7 +11,7 @@ Left to right: which model you are on, the cache state and its countdown,
 and how full the context window is. The three shots above are real output on
 Sonnet 5, Opus 5 and Haiku 4.5, showing the cache warm, cooling and about to
 expire. Note the last one reads `33k/200k` rather than `/1M`, because Haiku's
-window is smaller and the gauge follows the model.
+window is smaller and the gauge follows the window Claude Code reports.
 
 > [!IMPORTANT]
 > **The status line is not shown by default. One command turns it on:**
@@ -192,7 +192,7 @@ Git Bash being the shell:
 
 ## Options
 
-Display timezone, context-window override, and two optional segments are
+Display timezone, a context-window override, and one optional segment are
 declared as this plugin's `userConfig`.
 
 **Interactively:** you are prompted for each option when the plugin is
@@ -226,9 +226,8 @@ project-scope edit looks correct and silently does nothing.
 | Option | Default | What it does |
 | --- | --- | --- |
 | `display_tz` | UTC | IANA zone for the displayed clock. The freshness maths stays in UTC regardless. |
-| `context_limit` | auto | Override the per-model context window, if the built-in table is wrong for you. |
+| `context_limit` | auto | Override the context window size, if the one Claude Code reports is wrong for your setup. |
 | `show_full_price` | off | Show how many tokens the current turn re-sent at full price. Useful when watching cache efficiency. |
-| `show_200k_check` | off | Development aid for this plugin's own accuracy. Leave off. |
 
 ## Idle compaction
 
