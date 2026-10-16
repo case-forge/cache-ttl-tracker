@@ -14,8 +14,30 @@ import (
 
 // CacheState is the on-disk shape of a session's state file.
 type CacheState struct {
-	LastMessageUTC  string `json:"last_message_utc"`
+	// LastMessageUTC is the last tool call, turn end or compaction.
+	LastMessageUTC string `json:"last_message_utc"`
+	// LastPromptUTC is when the user last submitted a prompt. The API
+	// request that refreshes the cache goes out at that moment, whether or
+	// not an answer ever arrives (an interrupted turn fires no Stop), so it
+	// is a touch in its own right. Kept apart from LastMessageUTC so the
+	// Stop-time red-zone latch keeps reading exactly what it always read.
+	LastPromptUTC   string `json:"last_prompt_utc,omitempty"`
 	PostRedReminder bool   `json:"post_red_reminder"`
+}
+
+// LastTouch is the newest of the recorded cache touches.
+func (c CacheState) LastTouch() (time.Time, error) {
+	msg, errMsg := ParseTimestamp(c.LastMessageUTC)
+	prompt, errPrompt := ParseTimestamp(c.LastPromptUTC)
+	switch {
+	case errMsg != nil && errPrompt != nil:
+		return time.Time{}, errMsg
+	case errPrompt != nil:
+		return msg, nil
+	case errMsg != nil || prompt.After(msg):
+		return prompt, nil
+	}
+	return msg, nil
 }
 
 const (

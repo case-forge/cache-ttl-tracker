@@ -120,6 +120,18 @@ type Payload struct {
 	TranscriptPath    string     `json:"transcript_path"`
 	Model             *ModelInfo `json:"model"`
 	Exceeds200kTokens *bool      `json:"exceeds_200k_tokens"`
+	Version           string     `json:"version"`
+	Cwd               string     `json:"cwd"`
+	Workspace         *struct {
+		CurrentDir string `json:"current_dir"`
+	} `json:"workspace"`
+}
+
+func (p Payload) workDir() string {
+	if p.Workspace != nil && p.Workspace.CurrentDir != "" {
+		return p.Workspace.CurrentDir
+	}
+	return p.Cwd
 }
 
 type ModelInfo struct {
@@ -152,6 +164,8 @@ type ScanResult struct {
 	TTLSeconds    *int       // the TTL CurrentModel last wrote with
 	ReadTokens    int        // cache_read_input_tokens on CurrentModel's last turn
 	TurnUncached  int        // summed across every step of the turn in progress
+	CompactedAt   *time.Time // newest compaction summary, when it carries a timestamp
+	Version       string     // Claude Code version stamped on the newest record
 }
 
 func readTail(transcriptPath string) (string, bool) {
@@ -274,6 +288,9 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 		if asBool(record["isSidechain"]) {
 			continue
 		}
+		if facts.Version == "" {
+			facts.Version, _ = record["version"].(string)
+		}
 
 		// A compaction newer than the newest usage block means the last
 		// reading describes a window that no longer exists. The scan
@@ -284,6 +301,12 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 			if facts.ContextTokens == nil {
 				v := PostCompact
 				facts.ContextTokens = &v
+			}
+			if facts.CompactedAt == nil {
+				stamp, _ := record["timestamp"].(string)
+				if ts, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+					facts.CompactedAt = &ts
+				}
 			}
 			continue
 		}
@@ -703,10 +726,17 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		fmt.Fprintf(stdout, "%s%s%scache: no messages yet%s%s\n", model, Yellow, Bold, Reset, trailer)
 		return
 	}
-	last, err := state.ParseTimestamp(cs.LastMessageUTC)
+	last, err := cs.LastTouch()
 	if err != nil {
 		fmt.Fprintf(stdout, "%s%s%scache: no messages yet%s%s\n", model, Yellow, Bold, Reset, trailer)
 		return
+	}
+
+	// A compaction the hooks did not see (the PreCompact hook has not been
+	// confirmed to fire for idle compaction) still shows in the transcript.
+	// It rewrites the window, so the clock restarts from it.
+	if scan.CompactedAt != nil && scan.CompactedAt.After(last) {
+		last = *scan.CompactedAt
 	}
 
 	now := time.Now().UTC()
@@ -732,7 +762,27 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	var detailBold bool
 	var label, eta string
 
+	// Idle compaction: when one is expected, the cache has 54 minutes to
+	// live, not 60, and what ends it is a compaction rather than an expiry.
+	// Only while elapsed is inside the 54 minutes; after that the plain
+	// clock below takes over, so a compaction that never came (feature
+	// removed, a different front end) degrades to the old behaviour.
+	assumedTTL := OneHourSeconds
 	if scan.TTLSeconds != nil {
+		assumedTTL = *scan.TTLSeconds
+	} else if state.OverageMonitorOn(home) {
+		assumedTTL = FiveMinSeconds
+	}
+	idleVersion := payload.Version
+	if idleVersion == "" {
+		idleVersion = scan.Version
+	}
+	idle := DetectIdleCompaction(idleVersion, home, payload.workDir())
+	idleActive := idle.Armed(scan.ContextTokens, assumedTTL) && elapsed < IdleCompactAfterSeconds
+
+	if idleActive {
+		colour, detailBold, label, eta = IdleCompactView(elapsed, last, tz, postRedReminder)
+	} else if scan.TTLSeconds != nil {
 		measuredTTL := *scan.TTLSeconds
 		// Measured beats both the flag file and the ambiguity it forces:
 		// with the real TTL there is no "warm on plan / cold if overage"

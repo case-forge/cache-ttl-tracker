@@ -1,6 +1,6 @@
 // Command cache-ttl-tracker is the whole plugin:
 //
-//	track          the PostToolUse/Stop/PreCompact hooks
+//	track          the UserPromptSubmit/PostToolUse/Stop/PreCompact hooks
 //	statusline     the statusLine command
 //	session-start  the SessionStart hook: the one-time setup notice
 //	install        wires the statusline into the user's own settings.json

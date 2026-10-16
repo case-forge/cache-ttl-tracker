@@ -68,3 +68,28 @@ func TestOverageMonitorOnReflectsTheFlagFile(t *testing.T) {
 		t.Error("expected off by default")
 	}
 }
+
+func TestLastTouchIsTheNewestOfTheRecordedTouches(t *testing.T) {
+	older := FormatTimestamp(time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC))
+	newer := FormatTimestamp(time.Date(2026, 10, 16, 9, 30, 0, 0, time.UTC))
+
+	got, err := CacheState{LastMessageUTC: older, LastPromptUTC: newer}.LastTouch()
+	if err != nil || FormatTimestamp(got) != newer {
+		t.Errorf("prompt newer: got %v (%v)", got, err)
+	}
+	got, err = CacheState{LastMessageUTC: newer, LastPromptUTC: older}.LastTouch()
+	if err != nil || FormatTimestamp(got) != newer {
+		t.Errorf("message newer: got %v (%v)", got, err)
+	}
+	got, err = CacheState{LastMessageUTC: older}.LastTouch()
+	if err != nil || FormatTimestamp(got) != older {
+		t.Errorf("old file with no prompt field: got %v (%v)", got, err)
+	}
+	got, err = CacheState{LastPromptUTC: newer}.LastTouch()
+	if err != nil || FormatTimestamp(got) != newer {
+		t.Errorf("prompt only: got %v (%v)", got, err)
+	}
+	if _, err := (CacheState{}).LastTouch(); err == nil {
+		t.Error("no touches at all must be an error, i.e. 'no messages yet'")
+	}
+}
