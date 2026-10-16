@@ -20,17 +20,10 @@ window is smaller and the gauge follows the model.
 > ~/.claude/skills/cache-ttl-tracker/bin/cache-ttl-tracker install
 > ```
 >
-> ```powershell
-> # Windows PowerShell
-> & "$HOME\.claude\skills\cache-ttl-tracker\bin\cache-ttl-tracker-windows-amd64.exe" install
-> ```
+> Or ask Claude: *"set up the cache-ttl-tracker status line"*.
 >
-> Or simply ask Claude: *"set up the cache-ttl-tracker status line"*.
->
-> This is not a missing feature. Claude Code gives plugins no way to
-> register a status line, so every plugin that draws one needs an entry in
-> your own `settings.json`. The command above writes it for you, safely.
-> [Why, and how to do it by hand](#the-status-line-setup-step)
+> Windows PowerShell, and why a plugin cannot do this itself:
+> [the setup step](#the-status-line-setup-step).
 
 ## Why it matters
 
@@ -251,9 +244,6 @@ follows it:
   down, in place of `expiring`.
 - **After the compaction** the clock restarts green: the window is small and
   freshly summarised.
-- **Under the floor, nothing changes.** A conversation below 200K tokens is
-  never compacted this way, so its cache still goes cold at the TTL and the
-  ordinary `warm` / `cooling` / `expiring` / `cold` clock applies.
 
 This is Claude Code behaviour, not an API guarantee, so the notice appears only
 while all of these hold, each re-checked on every refresh:
@@ -265,7 +255,9 @@ while all of these hold, each re-checked on every refresh:
   managed `settings.json`;
 - the cache is on the one-hour TTL;
 - the context is at or over `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` (default
-  200000, from the environment or the `env` block of settings).
+  200000, from the environment or the `env` block of settings). Below it
+  nothing is compacted, so the cache still goes cold at the TTL on the
+  ordinary `warm` / `cooling` / `expiring` / `cold` clock.
 
 If Anthropic changes or removes the feature, the notice stops appearing and the
 ordinary clock is what remains. If the 54 minutes pass and no compaction
