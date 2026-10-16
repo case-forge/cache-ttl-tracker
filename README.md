@@ -296,7 +296,7 @@ implementation that saw real daily use, ported behaviour for behaviour, with
 an equivalent Go test for every case the old suite covered. The screenshots
 above are live output from the current build.
 
-Not yet submitted to the official plugin marketplace.
+Submitted to the official plugin marketplace and awaiting review.
 
 **Known limitation, and the direction of travel.** Because no API reports
 live cache state, this is a heuristic wherever the transcript does not state
