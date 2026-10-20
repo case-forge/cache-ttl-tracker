@@ -20,17 +20,10 @@ window is smaller and the gauge follows the model.
 > ~/.claude/skills/cache-ttl-tracker/bin/cache-ttl-tracker install
 > ```
 >
-> ```powershell
-> # Windows PowerShell
-> & "$HOME\.claude\skills\cache-ttl-tracker\bin\cache-ttl-tracker-windows-amd64.exe" install
-> ```
+> Or ask Claude: *"set up the cache-ttl-tracker status line"*.
 >
-> Or simply ask Claude: *"set up the cache-ttl-tracker status line"*.
->
-> This is not a missing feature. Claude Code gives plugins no way to
-> register a status line, so every plugin that draws one needs an entry in
-> your own `settings.json`. The command above writes it for you, safely.
-> [Why, and how to do it by hand](#the-status-line-setup-step)
+> Windows PowerShell, and why a plugin cannot do this itself:
+> [the setup step](#the-status-line-setup-step).
 
 ## Why it matters
 
@@ -46,8 +39,10 @@ outright, those override the inference.
 
 ## What it does
 
-- **Hooks** (`PostToolUse`, `Stop`, `PreCompact`) record when the cache was
-  last plausibly touched, per session.
+- **Hooks** (`UserPromptSubmit`, `PostToolUse`, `Stop`, `PreCompact`) record
+  when the cache was last plausibly touched, per session. A prompt counts the
+  moment it is submitted, because that is when the request that refreshes the
+  cache goes out, whether or not an answer ever arrives.
 - **A status line** renders that as `warm` / `cooling` / `expiring` / `cold`
   with a countdown, alongside a context-window gauge and a notice when a
   model switch or a large uncached turn means full-price tokens.
@@ -235,6 +230,39 @@ project-scope edit looks correct and silently does nothing.
 | `show_full_price` | off | Show how many tokens the current turn re-sent at full price. Useful when watching cache efficiency. |
 | `show_200k_check` | off | Development aid for this plugin's own accuracy. Leave off. |
 
+## Idle compaction
+
+Claude Code 2.1.299 added idle compaction: a conversation of 200K+ tokens left
+idle for about 54 minutes is compacted before its one-hour cache expires. When
+that is going to happen, "expiring" is the wrong word, so the status line
+follows it:
+
+- **The clock counts to 54 minutes, not 60.** Every colour change arrives 10%
+  sooner. The end of the clock reads `compacts HH:MM (idle compaction)` instead
+  of `cold by HH:MM`.
+- **From about 49 minutes** the red label reads `compacting in 5m`, counting
+  down, in place of `expiring`.
+- **After the compaction** the clock restarts green: the window is small and
+  freshly summarised.
+
+This is Claude Code behaviour, not an API guarantee, so the notice appears only
+while all of these hold, each re-checked on every refresh:
+
+- the running Claude Code is 2.1.299 or newer (read from the status line
+  payload, or the transcript if the payload has none; an unknown version counts
+  as absent);
+- `"idleCompaction": false` is not set in user, project, project-local or
+  managed `settings.json`;
+- the cache is on the one-hour TTL;
+- the context is at or over `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` (default
+  200000, from the environment or the `env` block of settings). Below it
+  nothing is compacted, so the cache still goes cold at the TTL on the
+  ordinary `warm` / `cooling` / `expiring` / `cold` clock.
+
+If Anthropic changes or removes the feature, the notice stops appearing and the
+ordinary clock is what remains. If the 54 minutes pass and no compaction
+follows, the ordinary clock resumes too, rather than guessing.
+
 ## Which TTL you are on
 
 Getting this wrong is a trap in exactly one direction: assume 1 hour while
@@ -268,28 +296,13 @@ implementation that saw real daily use, ported behaviour for behaviour, with
 an equivalent Go test for every case the old suite covered. The screenshots
 above are live output from the current build.
 
-Not yet submitted to the official plugin marketplace.
+Submitted to the official plugin marketplace and awaiting review.
 
 **Known limitation, and the direction of travel.** Because no API reports
 live cache state, this is a heuristic wherever the transcript does not state
 the real TTL and cache-creation numbers outright. Leaning further on what
 the transcript actually reports, and less on elapsed-time inference, is the
 active goal rather than a finished feature.
-
-## Roadmap
-
-Three features exist in a private sibling project and are deliberately not
-here yet. Honest status on each rather than a uniform "coming soon":
-
-- **Zellij tab auto-titling.** Solid: verified against a real multi-session
-  setup, race-free. Held back only by deciding how it should be packaged.
-- **Telegram alerting** when the cache is about to expire. Working and
-  verified end to end.
-- **Manual-wait detection**, which alerts when a permission prompt sits
-  unanswered. Genuinely unproven, and lands only once it actually works.
-
-The first two will arrive as opt-in options, off by default, never a
-surprise on install.
 
 ## Licence
 

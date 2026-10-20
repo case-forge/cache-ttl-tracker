@@ -199,3 +199,54 @@ func TestASessionIDWithPathCharactersCannotEscapeTheStateDir(t *testing.T) {
 		t.Errorf("expected exactly one file %q, got %v", sessionID+".json", entries)
 	}
 }
+
+func TestAPromptSubmitRecordsTheTouchWithoutDisturbingTheLatch(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().UTC().Add(-58 * time.Minute)
+	statePath := writeState(t, dir, "sess1", state.CacheState{LastMessageUTC: state.FormatTimestamp(old), PostRedReminder: true})
+
+	Run(dir, filepath.Join(dir, "overage.on"), time.Now().UTC(), "sess1", "UserPromptSubmit")
+
+	got := readState(t, statePath)
+	if got.LastMessageUTC != state.FormatTimestamp(old) {
+		t.Errorf("LastMessageUTC must be left alone, got %q", got.LastMessageUTC)
+	}
+	if !got.PostRedReminder {
+		t.Error("the reminder latch must survive a prompt submit")
+	}
+	ts, err := state.ParseTimestamp(got.LastPromptUTC)
+	if err != nil || time.Since(ts) > 5*time.Second {
+		t.Errorf("prompt time not recorded: %q (%v)", got.LastPromptUTC, err)
+	}
+	if touch, _ := got.LastTouch(); time.Since(touch) > 5*time.Second {
+		t.Errorf("the effective touch should now be the prompt: %v", touch)
+	}
+}
+
+func TestAPromptSubmitWithNoPriorStateStartsTheClock(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "sess1.json")
+
+	Run(dir, filepath.Join(dir, "overage.on"), time.Now().UTC(), "sess1", "UserPromptSubmit")
+
+	touch, err := readState(t, statePath).LastTouch()
+	if err != nil || time.Since(touch) > 5*time.Second {
+		t.Errorf("first prompt should start the clock: %v (%v)", touch, err)
+	}
+}
+
+func TestTheStopLatchIsStillMeasuredFromTheLastMessageNotThePrompt(t *testing.T) {
+	// A prompt submitted after a red-zone gap must not erase the evidence of
+	// that gap before the Stop that is meant to latch it.
+	dir := t.TempDir()
+	old := time.Now().UTC().Add(-59 * time.Minute)
+	statePath := writeState(t, dir, "sess1", state.CacheState{LastMessageUTC: state.FormatTimestamp(old)})
+	flag := filepath.Join(dir, "overage.on")
+
+	Run(dir, flag, time.Now().UTC(), "sess1", "UserPromptSubmit")
+	Run(dir, flag, time.Now().UTC(), "sess1", "Stop")
+
+	if !readState(t, statePath).PostRedReminder {
+		t.Error("a 59m gap ended by a Stop must still latch the reminder")
+	}
+}

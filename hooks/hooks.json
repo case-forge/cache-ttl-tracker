@@ -1,6 +1,17 @@
 {
-  "description": "Approximate prompt-cache freshness tracking (no API exposes real cache state): PostToolUse/Stop/PreCompact hooks record cache-touch timestamps per session, paired with a statusline showing warm/cooling/cold and time-to-expiry.",
+  "description": "Approximate prompt-cache freshness tracking (no API exposes real cache state): UserPromptSubmit/PostToolUse/Stop/PreCompact hooks record cache-touch timestamps per session, paired with a statusline showing warm/cooling/cold and time-to-expiry.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cache-ttl-tracker\" track",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [

@@ -1,4 +1,4 @@
-// Package tracker is the PostToolUse/Stop/PreCompact hook: it records the
+// Package tracker is the UserPromptSubmit/PostToolUse/Stop/PreCompact hook: it records the
 // wall-clock time the cache was last plausibly touched, per session, for
 // the statusline's freshness estimate.
 //
@@ -65,6 +65,17 @@ func Run(stateDir, overageFlagPath string, now time.Time, sessionID, eventName s
 	statePath := filepath.Join(stateDir, sessionID+".json")
 
 	switch eventName {
+	case "UserPromptSubmit":
+		// The cache is refreshed by the request this prompt triggers, the
+		// moment it is sent, not when (or whether) the answer finishes. Only
+		// the prompt time is recorded: LastMessageUTC and the reminder latch
+		// stay exactly as they were, so the Stop-time latch below still
+		// measures the gap it always measured.
+		cs, _ := state.Read(statePath)
+		cs.LastPromptUTC = state.FormatTimestamp(now)
+		state.Write(stateDir, statePath, cs)
+		return
+
 	case "PostToolUse":
 		// Fires many times per turn: only refresh the timestamp (the
 		// cache really was touched by this tool call's API request) and
