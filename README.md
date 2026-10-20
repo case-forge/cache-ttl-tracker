@@ -44,8 +44,8 @@ outright, those override the inference.
   moment it is submitted, because that is when the request that refreshes the
   cache goes out, whether or not an answer ever arrives.
 - **A status line** renders that as `warm` / `cooling` / `expiring` / `cold`
-  with a countdown, alongside a context-window gauge and a notice when a
-  model switch or a large uncached turn means full-price tokens.
+  with a countdown, alongside a context-window gauge and a `$` marker when a
+  request re-wrote most of the context (see [Rewrites](#rewrites)).
 - **A `SessionStart` notice** tells you the status line needs setting up,
   until it is. Then it goes quiet for good.
 
@@ -190,44 +190,44 @@ Git Bash being the shell:
 ```
 </details>
 
-## Options
+## Settings
 
-Display timezone, a context-window override, and one optional segment are
-declared as this plugin's `userConfig`.
+There are none to set. The window comes from Claude Code, the clock is shown
+in your machine's own time zone (run with `TZ=Europe/London`, for example, to
+show another; the freshness maths is in UTC regardless), and the idle
+compaction behaviour follows Claude Code's own `idleCompaction` switch and
+floor. Installing asks you nothing.
 
-**Interactively:** you are prompted for each option when the plugin is
-*enabled*. That timing is worth knowing, because it means changing a value
-later appears to require disabling and re-enabling the plugin. It does:
-`/reload-plugins` re-reads hooks and servers, but the option prompt only
-fires on the transition to enabled. This is how Claude Code's `userConfig`
-works rather than anything specific to this plugin.
+Two optional flag files exist, and are checked fresh on every call:
+`~/.claude/cache-ttl-tracker-quiet` (stop the setup notice) and
+`~/.claude/cache-ttl-overage-monitor.on` (see [Which TTL you are on](#which-ttl-you-are-on)).
 
-**As code, which avoids that cycle entirely:**
+## Rewrites
 
-```json
-"pluginConfigs": {
-  "cache-ttl-tracker@skills-dir": {
-    "options": {
-      "display_tz": "Europe/London",
-      "show_full_price": true
-    }
-  }
-}
-```
+When a request found under a tenth of its context in the cache and the context
+is over 50K tokens, most of the window was billed as a cache *write* instead
+of being read at a tenth of the price. That happens on a cold start, after a
+compaction, on a model switch, and when the cache went cold. The status line
+then shows dollar signs and the number of tokens re-written, for the rest of
+that turn:
 
-This plugin re-reads its options on every invocation, so an edit here takes
-effect on the next refresh tick with no restart and no re-enable.
-
-**`pluginConfigs` must go in user settings** (`~/.claude/settings.json`).
-Claude Code reads it only from user, `--settings` and managed settings.
-Entries in a project's `.claude/settings.json` are ignored outright, so a
-project-scope edit looks correct and silently does nothing.
-
-| Option | Default | What it does |
+| Shown | Re-written | Colour |
 | --- | --- | --- |
-| `display_tz` | UTC | IANA zone for the displayed clock. The freshness maths stays in UTC regardless. |
-| `context_limit` | auto | Override the context window size, if the one Claude Code reports is wrong for your setup. |
-| `show_full_price` | off | Show how many tokens the current turn re-sent at full price. Useful when watching cache efficiency. |
+| `$ 120k` | up to 200K | green |
+| `$$ 300k` | 200K to 400K | yellow |
+| `$$$ 412k` | 400K to 600K | yellow |
+| `$$$$ 700k` | 600K to 800K | red |
+| `$$$$$ 1.24M` | over 800K | red |
+
+Only one rewrite is shown at a time: the largest one in the current turn. A
+bigger one later in the same turn replaces it, a smaller one does not, and the
+next prompt starts again from nothing. Earlier turns are not kept, so scroll
+back through the conversation, not the status line, to see them.
+
+One `$` per 200K tokens, rounded up. The signs show relative size, not a
+billed amount: a write costs 1.25x the base input price on a 5-minute TTL and
+2x on a 1-hour TTL, and a hit costs 0.1x, so the same tokens cost the same
+multiple whatever the model. The colour is never the only signal.
 
 ## Idle compaction
 
@@ -282,9 +282,8 @@ touch ~/.claude/cache-ttl-overage-monitor.on   # 5-minute TTL
 ```
 
 Delete it to go back to 1-hour estimates. It stays a flag file rather than a
-`userConfig` option on purpose: it is checked fresh on every call, so
-flipping it applies to your very next message, whereas an option is read
-once at enable time.
+setting on purpose: it is checked fresh on every call, so flipping it
+applies to your very next message.
 
 ## Status
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.0
+
+The status line now needs no settings.
+
+- **Rewrites replace the full-price segment.** When a request re-wrote most of
+  its context (under a tenth read from cache, over 50K tokens), the status
+  line shows `$` to `$$$$$`, one per 200K tokens, with the amount: `$$$ 412k`.
+  It stays up for the turn it happened in, and a first request or a
+  compaction counts too. It is on for everyone and has no setting, replacing
+  the opt-in `show_full_price` segment, which fired on a large share of ordinary turns.
+  See [Rewrites](README.md#rewrites).
+- **No options.** `display_tz`, `context_limit`, `show_full_price` and
+  `show_200k_check` are gone, and so is the install-time prompt for them. The
+  clock follows the machine's time zone (set `TZ` to show another), and the
+  window comes from Claude Code. A leftover `pluginConfigs` entry for any of
+  them is ignored.
+- **The 200k calibration check is removed.** It compared our input-side count
+  with a flag that includes output tokens, so the two could disagree without
+  either being wrong.
+- **The per-model context table is removed.** The window is the size Claude
+  Code reports. If none is reported, the segment shows the token count with
+  no percentage instead of a guessed one.
+
 ## Unreleased
 
 Follows Claude Code's new behaviour: idle compaction (2.1.299), and the

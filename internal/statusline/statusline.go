@@ -54,7 +54,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -147,7 +146,7 @@ type ScanResult struct {
 	LastTouch     *time.Time // when CurrentModel last had a turn here
 	TTLSeconds    *int       // the TTL CurrentModel last wrote with
 	ReadTokens    int        // cache_read_input_tokens on CurrentModel's last turn
-	TurnUncached  int        // summed across every step of the turn in progress
+	TurnRewrite   int        // largest single request this turn that re-wrote most of its context
 	CompactedAt   *time.Time // newest compaction summary, when it carries a timestamp
 	Version       string     // Claude Code version stamped on the newest record
 }
@@ -254,7 +253,7 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 	wanted := normalizeModelID(currentModel)
 	// Whether the usage blocks being read still belong to the turn in
 	// progress. Flips false at the first prompt older than this turn,
-	// which is what stops TurnUncached swallowing the whole session.
+	// which is what stops TurnRewrite reaching back into earlier turns.
 	withinTurn := true
 
 	lines := splitLines(tail)
@@ -324,13 +323,17 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 			facts.ContextTokens = &v
 		}
 
-		// Summed across every step of this turn, and across models,
+		// The largest rewrite among this turn's requests, across models,
 		// because the question is what the turn cost rather than which
-		// model spent it.
+		// model spent it. Kept for the whole turn, not just the newest
+		// request: a rewrite is almost always the first request of a turn,
+		// and the cheap steps after it would otherwise erase it in seconds.
 		if withinTurn {
-			uncached := total - asInt(usage["cache_read_input_tokens"])
-			if uncached > 0 {
-				facts.TurnUncached += uncached
+			read := asInt(usage["cache_read_input_tokens"])
+			if total > rewriteMinContext && read*10 < total {
+				if uncached := total - read; uncached > facts.TurnRewrite {
+					facts.TurnRewrite = uncached
+				}
 			}
 		}
 
@@ -361,8 +364,8 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 		// `!withinTurn` joins the condition deliberately: the other three
 		// facts come from the newest matching block and are settled
 		// almost immediately, so breaking on them alone would stop the
-		// scan a step or two into the turn and TurnUncached would report
-		// only the tail of it.
+		// scan a step or two into the turn and TurnRewrite would miss
+		// a rewrite further back in it.
 		if facts.ContextTokens != nil && facts.LastTouch != nil && facts.TTLSeconds != nil && !withinTurn {
 			break
 		}
@@ -379,52 +382,21 @@ func ContextTokens(transcriptPath string) *int {
 	return ScanTranscript(transcriptPath, "").ContextTokens
 }
 
-func envBool(name string) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
-	return v == "1" || v == "true" || v == "yes"
-}
+// displayTZ is the zone the clock is shown in: the machine's own, which Go
+// takes from the TZ environment variable or the operating system. The
+// freshness arithmetic is in UTC regardless; this only affects what is
+// printed. There is no setting for it: run with TZ set to show another zone.
+func displayTZ() *time.Location { return time.Local }
 
-func showFullPrice() bool { return envBool("CLAUDE_PLUGIN_OPTION_SHOW_FULL_PRICE") }
-
-func displayTZ() *time.Location {
-	name := strings.TrimSpace(os.Getenv("CLAUDE_PLUGIN_OPTION_DISPLAY_TZ"))
-	if name == "" {
-		return time.UTC
-	}
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		return time.UTC
-	}
-	return loc
-}
-
-// ContextLimit is the window the percentage is against: the user's override
-// if set, otherwise the size Claude Code reports for the session, otherwise 0
-// (unknown). It is deliberately not inferred from the model id: Claude Code
+// ContextLimit is the window the percentage is against: the size Claude Code
+// reports for the session, otherwise 0 (unknown). It is deliberately not inferred from the model id: Claude Code
 // knows the window it actually opened (a 1M variant, a gateway's own limit),
 // and a table of model names goes stale with every release.
 func ContextLimit(payload Payload) int {
-	if override := strings.TrimSpace(os.Getenv("CLAUDE_PLUGIN_OPTION_CONTEXT_LIMIT")); override != "" && isDigits(override) {
-		if n, err := strconv.Atoi(override); err == nil && n > 0 {
-			return n
-		}
-	}
 	if payload.ContextWindow != nil && payload.ContextWindow.Size > 0 {
 		return payload.ContextWindow.Size
 	}
 	return 0
-}
-
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // Bracket returns (colour, bold) for elapsed time as a fraction of
@@ -549,34 +521,57 @@ func ContextSegment(payload Payload, scan ScanResult) string {
 	return fmt.Sprintf("  %scontext %s/%s %d%%%s", colour, shown, ceiling, pct, Reset)
 }
 
-// fullPriceNoticeTokens: below it the uncached remainder is just "your
-// message plus my last reply" and saying so every turn is noise. Above it,
-// something re-sent a body of text at full price and that is worth a word.
-const fullPriceNoticeTokens = 10_000
+// A request "rewrites" the cache when it read under a tenth of its context
+// from cache and the context is over rewriteMinContext. That is a cold start,
+// a compaction, a model switch or a cache that went cold: every case where
+// most of the window was billed as a cache write instead of read at a tenth
+// of the price. A small context is excluded because its share of cache reads
+// is always low and the cost is too small to mention.
+const rewriteMinContext = 50_000
 
-// FullPriceSegment reports tokens on the last turn that were NOT served
-// from cache, when notable. Opt-in via the show_full_price userConfig
-// option, off by default, useful to someone watching their own cache
-// efficiency, not to everyone this status line ships to.
+// rewriteTierTokens is one "$": a rewrite is shown with one dollar sign per
+// 200K tokens re-written, rounded up, to a maximum of five.
+const (
+	rewriteTierTokens = 200_000
+	rewriteMaxTier    = 5
+)
+
+// RewriteTier is the number of dollar signs for a rewrite of this many
+// tokens: 1 up to 200K, 2 up to 400K, and so on to 5.
+func RewriteTier(tokens int) int {
+	tier := (tokens + rewriteTierTokens - 1) / rewriteTierTokens
+	if tier < 1 {
+		return 1
+	}
+	if tier > rewriteMaxTier {
+		return rewriteMaxTier
+	}
+	return tier
+}
+
+// RewriteSegment reports, for the turn in progress, the largest request that
+// re-wrote most of its context, as dollar signs sized by tokens and the
+// token count: "$$$ 412k". Green for one, yellow for two or three, red for
+// four or five. The signs carry the size on their own, so the colour is
+// never the only signal.
 //
-// This began as "cached <n> <pct>%", which was a mistake worth recording.
-// In the steady state each turn caches the previous turn's content, so the
-// only uncached input is the new message and the previous reply, about 1k
-// against a window of 170k. That made the segment a restatement of context
-// minus a rounding error, reading 99% for an entire session, while going
-// *silent* on a cold start, a model switch and the turn after a
-// compaction, because all three have ReadTokens of 0 and the old shape
-// returned "" for that: it hid on precisely the three turns that cost
-// money. Inverted, it is the complement of everything else on the line.
-func FullPriceSegment(scan ScanResult) string {
-	if !showFullPrice() {
+// This replaced an opt-in "turn: Nk full price" segment that summed every
+// uncached token in the turn. Most of that was ordinary new content, so it
+// fired on a third of turns; the rewrite is the expensive event, and it is
+// rare. It is shown unconditionally and has no setting.
+func RewriteSegment(scan ScanResult) string {
+	if scan.TurnRewrite <= 0 {
 		return ""
 	}
-	if scan.TurnUncached < fullPriceNoticeTokens {
-		return ""
+	tier := RewriteTier(scan.TurnRewrite)
+	colour := Green
+	switch {
+	case tier >= 4:
+		colour = Red
+	case tier >= 2:
+		colour = Yellow
 	}
-	shown := formatDecimalMillions(scan.TurnUncached)
-	return fmt.Sprintf("  %sturn: %s full price%s", Yellow, shown, Reset)
+	return fmt.Sprintf("  %s%s %s%s", colour, strings.Repeat("$", tier), formatDecimalMillions(scan.TurnRewrite), Reset)
 }
 
 // ElapsedClock renders MM:SS while the TTL is still counting down, h+m once
@@ -684,7 +679,7 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	// nothing else on screen.
 	model := ModelSegment(payload)
 	context := ContextSegment(payload, scan)
-	trailer := FullPriceSegment(scan) + context
+	trailer := RewriteSegment(scan) + context
 
 	stateDir := state.Dir(home)
 	statePath := filepath.Join(stateDir, sessionID+".json")
