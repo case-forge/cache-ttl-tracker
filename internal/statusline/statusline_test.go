@@ -1038,3 +1038,41 @@ func TestTheClockIsNotCapped(t *testing.T) {
 }
 
 func intPtr(n int) *int { return &n }
+
+// --- 200K windows ---------------------------------------------------------------
+
+func TestA200KWindowShowsItsOwnCeilingAndRewriteTier(t *testing.T) {
+	// A 200K-window model (Haiku 4.5, for example): the gauge follows the
+	// reported window, and a rewrite of the whole window can reach one dollar
+	// sign and no more.
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl",
+		promptRecord("2026-07-26T16:50:00.000Z"),
+		turnRecord("claude-haiku-4-5", 169997, 0, 0, "2026-07-26T16:50:10.000Z", false),
+	)
+	payload := windowPayload(200_000)
+	payload.TranscriptPath = path
+	scan := ScanTranscript(path, "claude-haiku-4-5")
+	if seg := plain(ContextSegment(payload, scan)); !strings.Contains(seg, "170k/200k") || !strings.Contains(seg, "85%") {
+		t.Errorf("got %q", seg)
+	}
+	if got := plain(RewriteSegment(scan)); got != "  $ 170k" {
+		t.Errorf("a whole-window rewrite on 200K must read $, got %q", got)
+	}
+	if RewriteTier(200_000) != 1 {
+		t.Error("the top of a 200K window must be one dollar sign")
+	}
+}
+
+func TestAOneMillionWindowOnAnyModelNameShowsItsOwnCeiling(t *testing.T) {
+	// The window comes from the payload, never from the model name: Haiku 5.5
+	// has a 1M window, so a model id containing "haiku" must not imply 200K.
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-haiku-5-5", 0, 0, 300000, "", false))
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-haiku-5-5"}
+	if seg := plain(ContextSegment(payload, ScanTranscript(path, "claude-haiku-5-5"))); !strings.Contains(seg, "/1M") {
+		t.Errorf("got %q", seg)
+	}
+}

@@ -27,10 +27,13 @@ window is smaller and the gauge follows the window Claude Code reports.
 
 ## Why it matters
 
-A cache hit costs 0.1x the base input price. Letting the cache go cold costs
-more than full price, because rebuilding it is billed as a cache *write*:
-1.25x base on a 5-minute TTL, 2x base on a 1-hour TTL. Staying warm is not a
-nice-to-have; going cold is the expensive outcome.
+A cache hit costs a fraction of the base input price: 0.1x on most models,
+and less on some of the newest (0.05x on Opus 5.5 and Sonnet 5.5, 0.025x on
+Fable 5.1). Letting the cache go cold costs more than full price, because
+rebuilding it is billed as a cache *write*: 1.25x base on a 5-minute TTL, 2x
+base on a 1-hour TTL, on every model. Staying warm is not a nice-to-have;
+going cold is the expensive outcome. See Anthropic's
+[pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
 
 No API reports whether a conversation's cache is currently warm, so this
 infers it from elapsed time since the cache was last touched, against the
@@ -206,7 +209,7 @@ Two optional flag files exist, and are checked fresh on every call:
 
 When a request found under a tenth of its context in the cache and the context
 is over 50K tokens, most of the window was billed as a cache *write* instead
-of being read at a tenth of the price. That happens on a cold start, after a
+of being read at a fraction of the price. That happens on a cold start, after a
 compaction, on a model switch, and when the cache went cold. The status line
 then shows dollar signs and the number of tokens re-written, for the rest of
 that turn:
@@ -224,10 +227,12 @@ bigger one later in the same turn replaces it, a smaller one does not, and the
 next prompt starts again from nothing. Earlier turns are not kept, so scroll
 back through the conversation, not the status line, to see them.
 
-One `$` per 200K tokens, rounded up. The signs show relative size, not a
-billed amount: a write costs 1.25x the base input price on a 5-minute TTL and
-2x on a 1-hour TTL, and a hit costs 0.1x, so the same tokens cost the same
-multiple whatever the model. The colour is never the only signal.
+One `$` per 200K tokens, rounded up. The signs show how many tokens were
+re-written, not a billed amount: what a token costs depends on the model and
+whether the cache is on the 5-minute or 1-hour TTL (writes cost 1.25x or 2x
+base input on every model), so the same marker is worth more on a pricier
+model. It works on any window: a 200K-window model can reach at most `$`, and
+a 1M-window model up to `$$$$$`. The colour is never the only signal.
 
 ## Idle compaction
 
