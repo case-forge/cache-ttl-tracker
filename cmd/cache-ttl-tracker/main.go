@@ -5,9 +5,9 @@
 //	session-start  the SessionStart hook: the one-time setup notice
 //	install        wires the statusline into the user's own settings.json
 //
-// One binary per platform, all committed, behind the bin/cache-ttl-tracker
-// dispatcher, so hooks.json and settings.json each name a single fixed
-// path, with no interpreter-name detection (python3/python/py) and no build
+// One binary per platform, published as release assets and fetched on first
+// run by the bin/cache-ttl-tracker dispatcher, so hooks.json and settings.json
+// each name a single fixed path, with no interpreter-name detection (python3/python/py) and no build
 // step on the machine that runs it.
 package main
 

@@ -14,16 +14,6 @@ import (
 	"github.com/case-forge/cache-ttl-tracker/internal/state"
 )
 
-func init() {
-	// The opt-in segments are read fresh from the environment on every
-	// call (unlike the Python original, which froze them as module-level
-	// constants at import time); see FullPriceSegment/LimitCheckSegment.
-	// Setting them here just saves every test that wants them on from
-	// calling t.Setenv individually.
-	os.Setenv("CLAUDE_PLUGIN_OPTION_SHOW_FULL_PRICE", "1")
-	os.Setenv("CLAUDE_PLUGIN_OPTION_SHOW_200K_CHECK", "1")
-}
-
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func plain(s string) string { return ansiRe.ReplaceAllString(s, "") }
@@ -147,41 +137,47 @@ func TestOnlyTheTailIsRead(t *testing.T) {
 
 // --- the ceiling the percentage is against --------------------------------
 
-func TestOpusAndSonnetAreOneMillion(t *testing.T) {
-	for _, model := range []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5"} {
-		if got := ContextLimit(Payload{Model: &ModelInfo{ID: model}}); got != 1_000_000 {
-			t.Errorf("%s: got %d, want 1_000_000", model, got)
+func windowPayload(size int) Payload {
+	return Payload{ContextWindow: &struct {
+		Size int `json:"context_window_size"`
+	}{Size: size}}
+}
+
+func TestTheWindowIsWhatClaudeCodeReports(t *testing.T) {
+	for _, size := range []int{200_000, 1_000_000, 750_000} {
+		if got := ContextLimit(windowPayload(size)); got != size {
+			t.Errorf("got %d, want %d", got, size)
 		}
 	}
 }
 
-func TestHaikuIsTwoHundredThousand(t *testing.T) {
-	got := ContextLimit(Payload{Model: &ModelInfo{ID: "claude-haiku-4-5-20251001"}})
-	if got != 200_000 {
-		t.Errorf("got %d, want 200_000", got)
+func TestTheModelIDIsNotConsultedForTheWindow(t *testing.T) {
+	p := Payload{Model: &ModelInfo{ID: "claude-haiku-4-5-20251001"}}
+	if got := ContextLimit(p); got != 0 {
+		t.Errorf("got %d, want 0 (unknown) when no window is reported", got)
 	}
 }
 
-func TestAnUnknownModelFallsBackRatherThanCrashing(t *testing.T) {
-	if got := ContextLimit(Payload{Model: &ModelInfo{ID: "something-new"}}); got != DefaultContextLimit {
-		t.Errorf("got %d, want default", got)
-	}
-	if got := ContextLimit(Payload{}); got != DefaultContextLimit {
-		t.Errorf("got %d, want default", got)
-	}
-}
-
-func TestTheLimitCanBeOverridden(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_OPTION_CONTEXT_LIMIT", "500000")
-	if got := ContextLimit(Payload{Model: &ModelInfo{ID: "claude-opus-5"}}); got != 500_000 {
-		t.Errorf("got %d, want 500000", got)
+func TestNoWindowReportedMeansUnknownNotAGuess(t *testing.T) {
+	for _, p := range []Payload{{}, windowPayload(0), windowPayload(-5)} {
+		if got := ContextLimit(p); got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
 	}
 }
 
-func TestAJunkOverrideIsIgnored(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_OPTION_CONTEXT_LIMIT", "lots")
-	if got := ContextLimit(Payload{Model: &ModelInfo{ID: "claude-opus-5"}}); got != 1_000_000 {
-		t.Errorf("got %d, want 1_000_000", got)
+func TestTheClockIsShownInTheMachinesOwnZone(t *testing.T) {
+	if displayTZ() != time.Local {
+		t.Error("the display zone must be the machine's own, with no setting")
+	}
+}
+
+func TestWithoutAWindowTheSegmentShowsTheCountAndNoPercentage(t *testing.T) {
+	dir := t.TempDir()
+	path := writeLines(t, dir, "session.jsonl", usageLine(nil))
+	seg := plain(ContextSegment(Payload{TranscriptPath: path}, ScanTranscript(path, "")))
+	if strings.TrimSpace(seg) != "context 222k" {
+		t.Errorf("got %q", seg)
 	}
 }
 
@@ -190,7 +186,9 @@ func TestAJunkOverrideIsIgnored(t *testing.T) {
 func TestTheSegmentShowsTokensCeilingAndPercentage(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "session.jsonl", usageLine(nil))
-	payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-opus-5"}
 	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
 	if strings.TrimSpace(seg) != "context 222k/1M 22%" {
 		t.Errorf("got %q", seg)
@@ -200,7 +198,9 @@ func TestTheSegmentShowsTokensCeilingAndPercentage(t *testing.T) {
 func TestMillionsAreShownWithTwoDecimals(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "m.jsonl", usageLine(map[string]any{"cache_read_input_tokens": 1240000}))
-	payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-opus-5"}
 	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
 	if !strings.Contains(seg, "1.24M/1M") {
 		t.Errorf("got %q, want 1.24M/1M", seg)
@@ -215,7 +215,9 @@ func TestColourEscalatesWithFullness(t *testing.T) {
 	colourAt := func(tokens int) string {
 		path := writeLines(t, dir, strconv.Itoa(tokens)+".jsonl",
 			usageLine(map[string]any{"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}))
-		payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+		payload := windowPayload(1_000_000)
+		payload.TranscriptPath = path
+		payload.Model = &ModelInfo{ID: "claude-opus-5"}
 		return ContextSegment(payload, ScanTranscript(path, ""))
 	}
 	if !strings.Contains(colourAt(220_000), Green) {
@@ -268,7 +270,9 @@ func TestACompactionNewerThanTheLastUsageBlockSuppressesTheFigure(t *testing.T) 
 	if got == nil || *got != PostCompact {
 		t.Errorf("got %v, want PostCompact", got)
 	}
-	payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-opus-5"}
 	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
 	if strings.TrimSpace(seg) != "context: just compacted" {
 		t.Errorf("got %q", seg)
@@ -373,7 +377,9 @@ func TestColourDirectionMatchesTheCacheClock(t *testing.T) {
 	ctxColour := func(tokens int) string {
 		path := writeLines(t, dir, "c"+strconv.Itoa(tokens)+".jsonl",
 			usageLine(map[string]any{"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}))
-		payload := Payload{TranscriptPath: path, Model: &ModelInfo{ID: "claude-opus-5"}}
+		payload := windowPayload(1_000_000)
+		payload.TranscriptPath = path
+		payload.Model = &ModelInfo{ID: "claude-opus-5"}
 		return ContextSegment(payload, ScanTranscript(path, ""))
 	}
 	if !strings.Contains(ctxColour(50_000), Green) {
@@ -804,41 +810,121 @@ func TestTheMergedScanStillReportsACompactionAndTheCacheTogether(t *testing.T) {
 	}
 }
 
-// --- the full-price segment ---------------------------------------------------
+// --- the rewrite segment ------------------------------------------------------
 
-func TestARoutineTurnSaysNothing(t *testing.T) {
-	if got := FullPriceSegment(ScanResult{ReadTokens: 173000}); got != "" {
-		t.Errorf("got %q, want empty", got)
+func TestTheTiersAreOneDollarPer200KRoundedUp(t *testing.T) {
+	cases := map[int]int{
+		1: 1, 150_000: 1, 200_000: 1,
+		200_001: 2, 400_000: 2,
+		400_001: 3, 600_000: 3,
+		600_001: 4, 800_000: 4,
+		800_001: 5, 1_000_000: 5, 5_000_000: 5,
+	}
+	for tokens, want := range cases {
+		if got := RewriteTier(tokens); got != want {
+			t.Errorf("RewriteTier(%d) = %d, want %d", tokens, got, want)
+		}
 	}
 }
 
-func TestALargeUncachedTurnIsReported(t *testing.T) {
-	seg := plain(FullPriceSegment(ScanResult{TurnUncached: 227000}))
-	if !strings.Contains(seg, "turn: 227k full price") {
-		t.Errorf("got %q", seg)
+func TestTheSegmentShowsDollarsAndTheAmount(t *testing.T) {
+	cases := map[int]string{
+		120_000:   "$ 120k",
+		300_000:   "$$ 300k",
+		412_000:   "$$$ 412k",
+		700_000:   "$$$$ 700k",
+		1_240_000: "$$$$$ 1.24M",
+	}
+	for tokens, want := range cases {
+		if got := plain(RewriteSegment(ScanResult{TurnRewrite: tokens})); got != "  "+want {
+			t.Errorf("%d: got %q, want %q", tokens, got, "  "+want)
+		}
 	}
 }
 
-func TestAColdPrefixIsReportedRatherThanHidden(t *testing.T) {
-	seg := plain(FullPriceSegment(ScanResult{TurnUncached: 174000}))
-	if !strings.Contains(seg, "turn: 174k full price") {
-		t.Errorf("got %q", seg)
+func TestTheColourFollowsTheTier(t *testing.T) {
+	cases := map[int]string{
+		150_000: Green,
+		300_000: Yellow, 500_000: Yellow,
+		700_000: Red, 900_000: Red,
+	}
+	for tokens, colour := range cases {
+		if got := RewriteSegment(ScanResult{TurnRewrite: tokens}); !strings.Contains(got, colour) {
+			t.Errorf("%d: expected colour %q in %q", tokens, colour, got)
+		}
+		if strings.Contains(RewriteSegment(ScanResult{TurnRewrite: tokens}), Bold) {
+			t.Errorf("%d: the segment must not use bold", tokens)
+		}
 	}
 }
 
-func TestNothingToMeasureStaysSilent(t *testing.T) {
-	if got := FullPriceSegment(ScanResult{TurnUncached: 0}); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := FullPriceSegment(ScanResult{}); got != "" {
-		t.Errorf("got %q", got)
+func TestNothingToReportStaysSilent(t *testing.T) {
+	for _, scan := range []ScanResult{{}, {ReadTokens: 173000}, {TurnRewrite: 0}} {
+		if got := RewriteSegment(scan); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
 	}
 }
 
-func TestMillionsAreShownWithTwoDecimalsToo(t *testing.T) {
-	seg := plain(FullPriceSegment(ScanResult{TurnUncached: 1240000}))
-	if !strings.Contains(seg, "1.24M") {
-		t.Errorf("got %q", seg)
+// scanRewrite scans a one-record transcript so the thresholds are exercised
+// through the real scanner, not by building a ScanResult by hand.
+//
+// turnRecord always adds 3 input tokens, so uncached is the request's whole
+// uncached figure and the cache write is 3 less than it.
+func scanRewrite(t *testing.T, uncached, read int) int {
+	t.Helper()
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl",
+		promptRecord("2026-07-26T16:50:00.000Z"),
+		turnRecord("claude-opus-5", uncached-3, 0, read, "2026-07-26T16:50:10.000Z", false),
+	)
+	return ScanTranscript(path, "claude-opus-5").TurnRewrite
+}
+
+func TestAnOrdinaryTurnIsNotARewrite(t *testing.T) {
+	if got := scanRewrite(t, 4000, 300000); got != 0 {
+		t.Errorf("a warm cache must read as no rewrite, got %d", got)
+	}
+}
+
+func TestAColdRequestIsARewriteOfItsUncachedTokens(t *testing.T) {
+	if got := scanRewrite(t, 300000, 0); got != 300000 {
+		t.Errorf("got %d, want 300000", got)
+	}
+}
+
+func TestTheReadShareThresholdIsATenth(t *testing.T) {
+	// Reading exactly a tenth of the context is not a rewrite; just under is.
+	if got := scanRewrite(t, 270000, 30000); got != 0 {
+		t.Errorf("10%% read must not count, got %d", got)
+	}
+	if got := scanRewrite(t, 271000, 29000); got == 0 {
+		t.Error("just under 10% read must count")
+	}
+}
+
+func TestASmallContextIsNeverARewrite(t *testing.T) {
+	if got := scanRewrite(t, 50000, 0); got != 0 {
+		t.Errorf("a context of 50K or less is too small to mention, got %d", got)
+	}
+	if got := scanRewrite(t, 50001, 0); got == 0 {
+		t.Error("just over 50K with nothing read must count")
+	}
+}
+
+func TestAFirstRequestOrACompactionCountsToo(t *testing.T) {
+	// Nothing about the rule asks whether the cache was previously warm:
+	// both are real cache writes at full write price, and rare.
+	dir := t.TempDir()
+	compact := map[string]any{"type": "user", "isCompactSummary": true, "timestamp": "2026-07-26T16:49:00.000Z",
+		"message": map[string]any{"role": "user", "content": "summary"}}
+	data, _ := json.Marshal(compact)
+	path := writeLines(t, dir, "t.jsonl",
+		string(data),
+		turnRecord("claude-opus-5", 119997, 0, 0, "2026-07-26T16:50:10.000Z", false),
+	)
+	if got := ScanTranscript(path, "claude-opus-5").TurnRewrite; got != 120000 {
+		t.Errorf("got %d, want 120000", got)
 	}
 }
 
@@ -859,18 +945,31 @@ func TestTheFigureSurvivesTheCheapStepsThatFollowIt(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "t.jsonl",
 		promptRecord("2026-07-26T16:50:00.000Z"),
-		turnRecord("claude-opus-5", 200000, 0, 0, "2026-07-26T16:50:10.000Z", false),
+		turnRecord("claude-opus-5", 199997, 0, 0, "2026-07-26T16:50:10.000Z", false),
 		toolResultRecord("2026-07-26T16:50:20.000Z"),
 		turnRecord("claude-opus-5", 0, 0, 200000, "2026-07-26T16:50:30.000Z", false),
 		toolResultRecord("2026-07-26T16:50:40.000Z"),
 		turnRecord("claude-opus-5", 0, 0, 200000, "2026-07-26T16:50:50.000Z", false),
 	)
 	scan := ScanTranscript(path, "claude-opus-5")
-	if scan.TurnUncached < 200000 {
-		t.Errorf("expected the expensive step to still be counted, got %d", scan.TurnUncached)
+	if scan.TurnRewrite != 200000 {
+		t.Errorf("the rewrite must outlast the cheap steps after it, got %d", scan.TurnRewrite)
 	}
-	if !strings.Contains(plain(FullPriceSegment(scan)), "full price") {
-		t.Error("expected a full price segment")
+	if got := plain(RewriteSegment(scan)); got != "  $ 200k" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestTheLargestRewriteInTheTurnWins(t *testing.T) {
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl",
+		promptRecord("2026-07-26T16:50:00.000Z"),
+		turnRecord("claude-opus-5", 99997, 0, 0, "2026-07-26T16:50:10.000Z", false),
+		toolResultRecord("2026-07-26T16:50:20.000Z"),
+		turnRecord("claude-opus-5", 499997, 0, 0, "2026-07-26T16:50:30.000Z", false),
+	)
+	if got := ScanTranscript(path, "claude-opus-5").TurnRewrite; got != 500000 {
+		t.Errorf("got %d, want 500000", got)
 	}
 }
 
@@ -883,10 +982,10 @@ func TestTheNextPromptResetsIt(t *testing.T) {
 		turnRecord("claude-opus-5", 0, 0, 200000, "2026-07-26T16:50:10.000Z", false),
 	)
 	scan := ScanTranscript(path, "claude-opus-5")
-	if scan.TurnUncached >= fullPriceNoticeTokens {
-		t.Errorf("the previous turn must not bleed into this one: %d", scan.TurnUncached)
+	if scan.TurnRewrite != 0 {
+		t.Errorf("the previous turn must not bleed into this one: %d", scan.TurnRewrite)
 	}
-	if got := FullPriceSegment(scan); got != "" {
+	if got := RewriteSegment(scan); got != "" {
 		t.Errorf("got %q, want empty", got)
 	}
 }
@@ -898,17 +997,16 @@ func TestASubagentDoesNotInflateTheTurn(t *testing.T) {
 		turnRecord("claude-opus-5", 0, 0, 200000, "2026-07-26T16:50:10.000Z", false),
 		turnRecord("claude-opus-5", 900000, 0, 0, "2026-07-26T16:50:20.000Z", true),
 	)
-	scan := ScanTranscript(path, "claude-opus-5")
-	if scan.TurnUncached >= fullPriceNoticeTokens {
-		t.Errorf("a sidechain must not inflate the turn: %d", scan.TurnUncached)
+	if got := ScanTranscript(path, "claude-opus-5").TurnRewrite; got != 0 {
+		t.Errorf("a sidechain must not count: %d", got)
 	}
 }
 
 func TestItAppearsOnARenderedLineWhenItShould(t *testing.T) {
 	dir := t.TempDir()
-	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 300000, 0, 50000, "", false))
+	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 299997, 0, 0, "", false))
 	out := plain(render(t, dir, path, "claude-opus-5", 1, false))
-	if !strings.Contains(out, "turn: 300k full price") {
+	if !strings.Contains(out, "$$ 300k") {
 		t.Errorf("got %q", out)
 	}
 }
@@ -939,36 +1037,42 @@ func TestTheClockIsNotCapped(t *testing.T) {
 	}
 }
 
-// --- the 200k cross-check (temporary) -------------------------------------------
+func intPtr(n int) *int { return &n }
 
-func boolPtr(b bool) *bool { return &b }
-func intPtr(n int) *int    { return &n }
+// --- 200K windows ---------------------------------------------------------------
 
-func TestThe200kCheckIsSilentWhenOurCountAgrees(t *testing.T) {
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(false)}, ScanResult{ContextTokens: intPtr(100000)}); got != "" {
-		t.Errorf("got %q", got)
+func TestA200KWindowShowsItsOwnCeilingAndRewriteTier(t *testing.T) {
+	// A 200K-window model (Haiku 4.5, for example): the gauge follows the
+	// reported window, and a rewrite of the whole window can reach one dollar
+	// sign and no more.
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl",
+		promptRecord("2026-07-26T16:50:00.000Z"),
+		turnRecord("claude-haiku-4-5", 169997, 0, 0, "2026-07-26T16:50:10.000Z", false),
+	)
+	payload := windowPayload(200_000)
+	payload.TranscriptPath = path
+	scan := ScanTranscript(path, "claude-haiku-4-5")
+	if seg := plain(ContextSegment(payload, scan)); !strings.Contains(seg, "170k/200k") || !strings.Contains(seg, "85%") {
+		t.Errorf("got %q", seg)
 	}
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: intPtr(300000)}); got != "" {
-		t.Errorf("got %q", got)
+	if got := plain(RewriteSegment(scan)); got != "  $ 170k" {
+		t.Errorf("a whole-window rewrite on 200K must read $, got %q", got)
+	}
+	if RewriteTier(200_000) != 1 {
+		t.Error("the top of a 200K window must be one dollar sign")
 	}
 }
 
-func TestThe200kCheckSpeaksUpOnDisagreement(t *testing.T) {
-	out := plain(LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: intPtr(100000)}))
-	if !strings.Contains(out, "200k flag disagrees") {
-		t.Errorf("got %q", out)
-	}
-}
-
-func TestThe200kCheckStaysQuietWithoutAReadingToCompare(t *testing.T) {
-	pc := PostCompact
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: &pc}); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := LimitCheckSegment(Payload{Exceeds200kTokens: boolPtr(true)}, ScanResult{ContextTokens: nil}); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := LimitCheckSegment(Payload{}, ScanResult{ContextTokens: intPtr(100000)}); got != "" {
-		t.Errorf("got %q", got)
+func TestAOneMillionWindowOnAnyModelNameShowsItsOwnCeiling(t *testing.T) {
+	// The window comes from the payload, never from the model name: Haiku 5.5
+	// has a 1M window, so a model id containing "haiku" must not imply 200K.
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-haiku-5-5", 0, 0, 300000, "", false))
+	payload := windowPayload(1_000_000)
+	payload.TranscriptPath = path
+	payload.Model = &ModelInfo{ID: "claude-haiku-5-5"}
+	if seg := plain(ContextSegment(payload, ScanTranscript(path, "claude-haiku-5-5"))); !strings.Contains(seg, "/1M") {
+		t.Errorf("got %q", seg)
 	}
 }
