@@ -366,6 +366,27 @@ func TestBoldRedIsExpiringRatherThanCold(t *testing.T) {
 	}
 }
 
+func TestFiveMinuteTTLUsesOneBandPerMinute(t *testing.T) {
+	cases := []struct {
+		elapsed float64
+		colour  string
+		bold    bool
+	}{
+		{0, Green, true}, {59, Green, true},
+		{60, Green, false}, {119, Green, false},
+		{120, Yellow, true}, {179, Yellow, true},
+		{180, Yellow, false}, {239, Yellow, false},
+		{240, Red, true}, {299, Red, true},
+		{300, Red, false}, {900, Red, false},
+	}
+	for _, c := range cases {
+		colour, bold := Bracket(c.elapsed, 300)
+		if colour != c.colour || bold != c.bold {
+			t.Errorf("Bracket(%v, 300) = %s bold=%v, want %s bold=%v", c.elapsed, colour, bold, c.colour, c.bold)
+		}
+	}
+}
+
 func TestColourDirectionMatchesTheCacheClock(t *testing.T) {
 	cacheFresh, _ := Bracket(10, 3600)
 	cacheExpiring, _ := Bracket(3500, 3600)
@@ -421,44 +442,14 @@ func turnRecord(model string, ttl1h, ttl5m, read int, stamp string, sidechain bo
 	return string(data)
 }
 
-func TestAOneHourWriteIsMeasuredAsOneHour(t *testing.T) {
-	dir := t.TempDir()
-	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 1334, 0, 200000, "", false))
-	facts := ScanTranscript(path, "claude-opus-5")
-	if facts.TTLSeconds == nil || *facts.TTLSeconds != 3600 {
-		t.Errorf("got %v, want 3600", facts.TTLSeconds)
-	}
-}
-
-func TestAFiveMinuteWriteIsMeasuredAsFiveMinutes(t *testing.T) {
-	dir := t.TempDir()
-	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 0, 1334, 200000, "", false))
-	facts := ScanTranscript(path, "claude-opus-5")
-	if facts.TTLSeconds == nil || *facts.TTLSeconds != 300 {
-		t.Errorf("got %v, want 300", facts.TTLSeconds)
-	}
-}
-
-func TestAPureReadKeepsLookingBackForATurnThatWrote(t *testing.T) {
+func TestAPureReadDoesNotHideTheNewestTouch(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "t.jsonl",
 		turnRecord("claude-opus-5", 900, 0, 200000, "2026-07-26T16:00:00.000Z", false),
 		turnRecord("claude-opus-5", 0, 0, 200000, "2026-07-26T16:30:00.000Z", false))
 	facts := ScanTranscript(path, "claude-opus-5")
-	if facts.TTLSeconds == nil || *facts.TTLSeconds != 3600 {
-		t.Errorf("got %v, want 3600", facts.TTLSeconds)
-	}
 	if facts.LastTouch == nil || facts.LastTouch.Minute() != 30 {
 		t.Errorf("last_touch should be the newest turn (minute 30): %v", facts.LastTouch)
-	}
-}
-
-func TestNoWriteAnywhereInTheWindowLeavesTheTTLUnknown(t *testing.T) {
-	dir := t.TempDir()
-	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 0, 0, 200000, "", false))
-	facts := ScanTranscript(path, "claude-opus-5")
-	if facts.TTLSeconds != nil {
-		t.Errorf("got %v, want nil", facts.TTLSeconds)
 	}
 }
 
@@ -468,9 +459,6 @@ func TestASubagentTurnIsNotMeasured(t *testing.T) {
 	facts := ScanTranscript(path, "claude-opus-5")
 	if facts.NewestModel != "" {
 		t.Errorf("got %q, want empty (sidechain skipped)", facts.NewestModel)
-	}
-	if facts.TTLSeconds != nil {
-		t.Errorf("got %v, want nil", facts.TTLSeconds)
 	}
 }
 
@@ -569,6 +557,13 @@ func TestAnObservedCacheReadOutranksANameMismatch(t *testing.T) {
 
 func render(t *testing.T, home, transcript, model string, elapsedMin int, postRedReminder bool) string {
 	t.Helper()
+	return renderTTL(t, home, transcript, model, elapsedMin, postRedReminder, map[string]any{"ttl": "1h"})
+}
+
+// renderTTL is render with an explicit prompt_cache object; nil leaves the
+// payload without one.
+func renderTTL(t *testing.T, home, transcript, model string, elapsedMin int, postRedReminder bool, cache any) string {
+	t.Helper()
 	session := "rendertest"
 	stateDir := state.Dir(home)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -584,6 +579,9 @@ func render(t *testing.T, home, transcript, model string, elapsedMin int, postRe
 		"session_id":      session,
 		"transcript_path": transcript,
 		"model":           map[string]any{"id": model},
+	}
+	if cache != nil {
+		payload["prompt_cache"] = cache
 	}
 	data, _ = json.Marshal(payload)
 	var out bytes.Buffer
@@ -636,16 +634,50 @@ func TestTheRedZoneLabelStillAppearsOnAGenuinelyOldCache(t *testing.T) {
 	}
 }
 
-func TestTheColdStateSurvivesAJustCompactedContext(t *testing.T) {
+func TestAfterACompactionTheCacheSegmentSaysWhenAndShowsNoClock(t *testing.T) {
+	dir := t.TempDir()
+	compact, _ := json.Marshal(map[string]any{"type": "user", "isCompactSummary": true, "timestamp": "2026-07-26T16:20:00.000Z", "message": map[string]any{"content": "s"}})
+	path := writeLines(t, dir, "compacted.jsonl",
+		turnRecord("claude-opus-5", 1000, 0, 200000, "2026-07-26T16:00:00.000Z", false),
+		string(compact))
+	want, _ := time.Parse(time.RFC3339, "2026-07-26T16:20:00Z")
+	for _, minutes := range []int{1, 47, 900} {
+		out := plain(render(t, dir, path, "claude-opus-5", minutes, false))
+		if !strings.Contains(out, "cache: compacted at "+want.In(time.Local).Format("15:04")) {
+			t.Errorf("%d min: expected the compaction time, got %q", minutes, out)
+		}
+		if !strings.Contains(out, "context: just compacted") {
+			t.Errorf("%d min: expected context: just compacted, got %q", minutes, out)
+		}
+		for _, banned := range []string{"warm", "cooling", "expiring", "cold", "TTL", " / "} {
+			if strings.Contains(out, banned) {
+				t.Errorf("%d min: no clock or cache state belongs here (%q): %q", minutes, banned, out)
+			}
+		}
+	}
+}
+
+func TestACompactionWithoutATimestampFallsBackToTheLastMessage(t *testing.T) {
 	dir := t.TempDir()
 	compact, _ := json.Marshal(map[string]any{"type": "user", "isCompactSummary": true, "message": map[string]any{"content": "s"}})
 	path := writeLines(t, dir, "compacted.jsonl", string(compact))
-	out := render(t, dir, path, "claude-opus-5", 900, false)
-	if !strings.Contains(out, "cache: cold") {
-		t.Errorf("expected cache: cold, got %q", out)
+	before := time.Now().Add(-30 * time.Minute).In(time.Local).Format("15:04")
+	out := plain(render(t, dir, path, "claude-opus-5", 30, false))
+	after := time.Now().Add(-30 * time.Minute).In(time.Local).Format("15:04")
+	if !strings.Contains(out, "cache: compacted at "+before) && !strings.Contains(out, "cache: compacted at "+after) {
+		t.Errorf("expected %s (or %s across a minute boundary), got %q", before, after, out)
 	}
-	if !strings.Contains(out, "context: just compacted") {
-		t.Errorf("expected context: just compacted, got %q", out)
+}
+
+func TestTheNextResponseBringsTheClockBack(t *testing.T) {
+	dir := t.TempDir()
+	compact, _ := json.Marshal(map[string]any{"type": "user", "isCompactSummary": true, "timestamp": "2026-07-26T16:20:00.000Z", "message": map[string]any{"content": "s"}})
+	path := writeLines(t, dir, "compacted.jsonl",
+		string(compact),
+		turnRecord("claude-opus-5", 1000, 0, 20000, "2026-07-26T16:25:00.000Z", false))
+	out := plain(render(t, dir, path, "claude-opus-5", 2, false))
+	if strings.Contains(out, "compacted at") || !strings.Contains(out, "cold by") {
+		t.Errorf("a response after the compaction must restore the clock: %q", out)
 	}
 }
 
@@ -682,7 +714,7 @@ func TestAMeasuredOneHourTTLIsLabelled1h(t *testing.T) {
 func TestAMeasuredFiveMinuteTTLIsLabelled5mNot1h(t *testing.T) {
 	dir := t.TempDir()
 	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 0, 1000, 200000, "", false))
-	out := render(t, dir, path, "claude-opus-5", 1, false)
+	out := renderTTL(t, dir, path, "claude-opus-5", 1, false, map[string]any{"ttl": "5m"})
 	if !strings.Contains(out, "5m TTL)") {
 		t.Errorf("expected 5m TTL, got %q", out)
 	}
@@ -718,7 +750,7 @@ func TestWithoutAMeasurementTheFlagFileStillDecides(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 0, 0, 200000, "", false))
-	out := render(t, dir, path, "claude-opus-5", 10, false)
+	out := renderTTL(t, dir, path, "claude-opus-5", 10, false, nil)
 	if !strings.Contains(out, "ovg") {
 		t.Errorf("expected the overage fallback, got %q", out)
 	}
@@ -801,9 +833,6 @@ func TestTheMergedScanStillReportsACompactionAndTheCacheTogether(t *testing.T) {
 	scan := ScanTranscript(path, "claude-opus-5")
 	if scan.ContextTokens == nil || *scan.ContextTokens != PostCompact {
 		t.Errorf("got %v, want PostCompact", scan.ContextTokens)
-	}
-	if scan.TTLSeconds == nil || *scan.TTLSeconds != 3600 {
-		t.Errorf("got %v, want 3600", scan.TTLSeconds)
 	}
 	if scan.LastTouch == nil {
 		t.Error("expected last_touch to still be found behind the compaction")
@@ -1074,5 +1103,79 @@ func TestAOneMillionWindowOnAnyModelNameShowsItsOwnCeiling(t *testing.T) {
 	payload.Model = &ModelInfo{ID: "claude-haiku-5-5"}
 	if seg := plain(ContextSegment(payload, ScanTranscript(path, "claude-haiku-5-5"))); !strings.Contains(seg, "/1M") {
 		t.Errorf("got %q", seg)
+	}
+}
+
+// --- prompt_cache.ttl from the payload ----------------------------------------
+
+// renderWithCache is render with a prompt_cache object in the payload.
+func renderWithCache(t *testing.T, home, transcript, model string, elapsedMin int, cache any) string {
+	t.Helper()
+	session := "cachetest"
+	stateDir := state.Dir(home)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	last := time.Now().UTC().Add(-time.Duration(elapsedMin) * time.Minute)
+	data, _ := json.Marshal(state.CacheState{LastMessageUTC: state.FormatTimestamp(last)})
+	if err := os.WriteFile(filepath.Join(stateDir, session+".json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"session_id":      session,
+		"transcript_path": transcript,
+		"model":           map[string]any{"id": model},
+		"version":         "2.1.301",
+	}
+	if cache != nil {
+		payload["prompt_cache"] = cache
+	}
+	data, _ = json.Marshal(payload)
+	var out bytes.Buffer
+	Run(bytes.NewReader(data), &out, home)
+	return out.String()
+}
+
+func TestThePayloadCanReportFiveMinutesOverAnHourInTheTranscript(t *testing.T) {
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 1334, 0, 50000, "", false))
+	out := renderWithCache(t, dir, path, "claude-opus-5", 10, map[string]any{"ttl": "5m"})
+	if !strings.Contains(out, "5m TTL)") || !strings.Contains(out, "since") {
+		t.Errorf("a 5m payload TTL ten minutes on must read as lapsed: %q", out)
+	}
+}
+
+func TestWithoutAReportedTTLTheOneHourDefaultIsShownAsAssumed(t *testing.T) {
+	dir := t.TempDir()
+	// The transcript says a five-minute write. It is not consulted.
+	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 0, 1334, 50000, "", false))
+	for name, cache := range map[string]any{
+		"absent":      nil,
+		"empty":       map[string]any{},
+		"null ttl":    map[string]any{"ttl": nil},
+		"unknown ttl": map[string]any{"ttl": "24h"},
+	} {
+		out := renderWithCache(t, dir, path, "claude-opus-5", 10, cache)
+		if !strings.Contains(out, "cold by") || !strings.Contains(out, "(1h TTL assumed)") {
+			t.Errorf("%s: expected the 1h default, labelled assumed: %q", name, out)
+		}
+		if strings.Contains(out, "5m") {
+			t.Errorf("%s: the transcript's write must not set the TTL: %q", name, out)
+		}
+	}
+}
+
+func TestThePayloadTTLFeedsTheIdleCompactionGate(t *testing.T) {
+	// Idle compaction is armed only on a one-hour TTL. A five-minute payload
+	// TTL must keep it off even where the transcript says one hour.
+	dir := t.TempDir()
+	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 1334, 0, 300000, "", false))
+	armed := renderWithCache(t, dir, path, "claude-opus-5", 30, map[string]any{"ttl": "1h"})
+	if !strings.Contains(armed, "idle compaction") {
+		t.Fatalf("fixture must arm idle compaction on a 1h TTL: %q", armed)
+	}
+	out := renderWithCache(t, dir, path, "claude-opus-5", 30, map[string]any{"ttl": "5m"})
+	if strings.Contains(out, "idle compaction") {
+		t.Errorf("a 5m TTL must not arm idle compaction: %q", out)
 	}
 }

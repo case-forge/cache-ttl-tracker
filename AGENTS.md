@@ -6,8 +6,9 @@ Guidance for coding agents and contributors working on cache-ttl-tracker.
 
 A Claude Code plugin written in Go (standard library only). Hooks record when
 a session's prompt cache was last touched; a status line command renders how
-warm it is. It has no settings, no network access and no telemetry. Keep it
-that way: a new option needs a strong reason, and anything that reads or
+warm it is. It has no settings and no telemetry, and the Go program makes no
+network connections (only the dispatcher script downloads release binaries).
+Keep it that way: a new option needs a strong reason, and anything that reads or
 writes outside the paths listed in [SECURITY.md](SECURITY.md) must update that
 file in the same change.
 
@@ -20,12 +21,14 @@ file in the same change.
 - `internal/tracker/`, `internal/state/` are the hooks and the per-session state.
 - `internal/installer/` writes the user's `statusLine` entry.
 - `hooks/hooks.json` wires the hooks; `bin/cache-ttl-tracker` is the
-  dispatcher that downloads the binary for the machine.
+  dispatcher that downloads the binary for the machine, and re-fetches it
+  when the `version` in `plugin.json` moves on. `scripts/test-dispatcher.sh`
+  tests it against a folder of fake releases.
 
 ## Commands
 
 ```sh
-make check      # go vet, gofmt check, go test ./...
+make check      # go vet, gofmt check, go test ./..., the dispatcher test
 make build      # a binary for this machine, into bin/
 claude plugin validate --strict .
 ```
@@ -41,4 +44,8 @@ fails without it, including the boundary values for any threshold.
 - Update the README and `CHANGELOG.md` in the same change as the behaviour.
 - Bump `version` in `.claude-plugin/plugin.json` for any released change;
   Claude Code uses it to decide whether an installed plugin is out of date.
+  The dispatcher fetches the release named `v<version>`, so the tag and the
+  version must match.
+- The TTL comes only from the payload's `prompt_cache.ttl`. Do not infer it
+  from the transcript.
 - British English in prose.

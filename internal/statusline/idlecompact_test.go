@@ -150,6 +150,12 @@ func TestArmedNeedsTheFloorTheOneHourTTLAndARealWindow(t *testing.T) {
 // size the transcript reports.
 func renderIdle(t *testing.T, home, transcript, version string, elapsedSec int) string {
 	t.Helper()
+	return renderIdleCache(t, home, transcript, version, elapsedSec, nil)
+}
+
+// renderIdleCache is renderIdle with a prompt_cache object in the payload.
+func renderIdleCache(t *testing.T, home, transcript, version string, elapsedSec int, cache any) string {
+	t.Helper()
 	stateDir := state.Dir(home)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -159,12 +165,16 @@ func renderIdle(t *testing.T, home, transcript, version string, elapsedSec int) 
 	if err := os.WriteFile(filepath.Join(stateDir, "idle.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	payload, _ := json.Marshal(map[string]any{
+	body := map[string]any{
 		"session_id":      "idle",
 		"transcript_path": transcript,
 		"model":           map[string]any{"id": "claude-opus-5"},
 		"version":         version,
-	})
+	}
+	if cache != nil {
+		body["prompt_cache"] = cache
+	}
+	payload, _ := json.Marshal(body)
 	var out bytes.Buffer
 	Run(bytes.NewReader(payload), &out, home)
 	return plain(out.String())
@@ -297,13 +307,13 @@ func TestAMeasuredFiveMinuteTTLNeverArms(t *testing.T) {
 	t.Setenv(idleCompactMinTokensEnv, "")
 	home := t.TempDir()
 	path := writeLines(t, home, "t.jsonl", turnRecord("claude-opus-5", 0, 1000, 250_000, "", false))
-	out := renderIdle(t, home, path, "2.1.299", 3*60)
+	out := renderIdleCache(t, home, path, "2.1.299", 3*60, map[string]any{"ttl": "5m"})
 	if strings.Contains(out, "compact") {
 		t.Errorf("a 5m cache is gone long before 54 minutes: %q", out)
 	}
 }
 
-func TestACompactionTheHooksMissedStillRestartsTheClock(t *testing.T) {
+func TestACompactionTheHooksMissedStillShowsItsTime(t *testing.T) {
 	t.Setenv(idleCompactMinTokensEnv, "")
 	home := t.TempDir()
 	stamp := time.Now().UTC().Add(-90 * time.Second).Format(time.RFC3339Nano)
@@ -313,8 +323,10 @@ func TestACompactionTheHooksMissedStillRestartsTheClock(t *testing.T) {
 		turnRecord("claude-opus-5", 1000, 0, 250_000, "2026-07-26T16:00:00.000Z", false), string(compact))
 
 	out := renderIdle(t, home, path, "2.1.299", 54*60+30)
-	if !strings.Contains(out, "cache: warm 01:") {
-		t.Errorf("expected the clock restarted a minute or so ago, green: %q", out)
+	compacted, _ := time.Parse(time.RFC3339Nano, stamp)
+	want := compacted.In(time.Local).Format("15:04")
+	if !strings.Contains(out, "cache: compacted at "+want) {
+		t.Errorf("expected the compaction time %s, no clock: %q", want, out)
 	}
 	if !strings.Contains(out, "context: just compacted") {
 		t.Errorf("expected the compacted context note: %q", out)

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.0
+
+The TTL comes from Claude Code, and a compaction no longer starts a clock.
+
+- **The TTL is what Claude Code reports.** The status line reads
+  `prompt_cache.ttl` from the payload (Claude Code 2.1.251 and later). The
+  transcript's `cache_creation` figures are no longer used to work it out. A
+  payload without one shows the one-hour default, labelled `(1h TTL assumed)`.
+  The `cache-ttl-overage-monitor.on` flag still decides when there is none.
+- **A 5-minute scale of its own.** On a 5-minute TTL the colours change by the
+  minute: green to 2:00, yellow to 4:00, red after. The fractional scale
+  gave only the last 25 seconds as red. See [The clock](README.md#the-clock).
+- **After a compaction, the time instead of a clock.** Until your next message
+  the cache segment reads `cache: compacted at 14:32`. The clock used to
+  restart at the compaction and run through yellow and red over a cache that
+  held only the replaced conversation. See [After a compaction](README.md#after-a-compaction).
+- **The binary follows the plugin version.** The dispatcher fetches the
+  release named by `version` in `plugin.json` and records it, so a `git pull`
+  that moves the version on now brings the matching binary instead of leaving
+  the first one downloaded. A failed download keeps the existing binary and is
+  retried at most hourly. `make build` records the version so local builds are
+  left alone.
+- SECURITY.md now describes the dispatcher's downloads, which it did not.
+
 ## 1.2.0
 
 The status line now needs no settings.
@@ -23,9 +47,7 @@ The status line now needs no settings.
   Code reports. If none is reported, the segment shows the token count with
   no percentage instead of a guessed one.
 
-## Unreleased
-
-Follows Claude Code's new behaviour: idle compaction (2.1.299), and the
+Also in 1.2.0, following Claude Code's new behaviour: idle compaction (2.1.299), and the
 cache being refreshed the moment a prompt is sent.
 
 - **Idle compaction notice.** When Claude Code 2.1.299 or newer is running,
