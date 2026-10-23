@@ -21,7 +21,7 @@ build:
 	@sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' .claude-plugin/plugin.json | head -1 > $(HOST_BINARY).version
 
 # Every shipped platform, cross-compiled from whichever machine runs this.
-# CI runs this on a version tag and attaches the results to a GitHub
+# CI runs this when plugin.json names a version with no release and attaches the results to a GitHub
 # Release via `gh release create` (.github/workflows/release.yml) -- these
 # binaries are never committed to the repo, only uploaded as release assets.
 release:

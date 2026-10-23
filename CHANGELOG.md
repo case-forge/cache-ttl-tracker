@@ -23,6 +23,10 @@ The TTL comes from Claude Code, and a compaction no longer starts a clock.
   the first one downloaded. A failed download keeps the existing binary and is
   retried at most hourly. `make build` records the version so local builds are
   left alone.
+- **Merging publishes the release.** The release workflow now runs on a push
+  to `main` as well as on a `v*` tag: if the version in `plugin.json` has no
+  release, it builds the six binaries and publishes `v<version>`. A tag
+  pushed by hand still works, and must match the version.
 - SECURITY.md now describes the dispatcher's downloads, which it did not.
 
 ## 1.2.0

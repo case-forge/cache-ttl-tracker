@@ -38,7 +38,10 @@ fails without it, including the boundary values for any threshold.
 
 ## Conventions
 
-- Never commit binaries. Releases build them in CI when a `v*` tag is pushed.
+- Never commit binaries. CI builds them and publishes the release when the
+  version in `plugin.json` has no release yet: the push to `main` that merges a
+  version bump does it, so merging a version bump is publishing. A `v*` tag
+  pushed by hand does the same, and must match the version.
 - The statusline runs every second. No work that scales with transcript size.
 - Colour carries a second signal at most; the text must say the same thing.
 - Update the README and `CHANGELOG.md` in the same change as the behaviour.
