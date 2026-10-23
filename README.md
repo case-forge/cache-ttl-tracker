@@ -240,7 +240,8 @@ Until your next message the cache segment reads `cache: compacted at 14:32`
 with a short summary, so the window is small and cheap to rebuild; the cache
 still warm behind it holds the conversation that was just replaced, so a clock
 counting it down would only look like a warning with nothing to act on. The
-next response brings the ordinary clock back.
+context gauge is left out as well, because there is no figure until then. The
+next response brings the clock and the gauge back.
 
 ## Rewrites
 

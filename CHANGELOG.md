@@ -13,9 +13,10 @@ The TTL comes from Claude Code, and a compaction no longer starts a clock.
   minute: green to 2:00, yellow to 4:00, red after. The fractional scale
   gave only the last 25 seconds as red. See [The clock](README.md#the-clock).
 - **After a compaction, the time instead of a clock.** Until your next message
-  the cache segment reads `cache: compacted at 14:32`. The clock used to
-  restart at the compaction and run through yellow and red over a cache that
-  held only the replaced conversation. See [After a compaction](README.md#after-a-compaction).
+  the cache segment reads `cache: compacted at 14:32` and nothing else: the
+  separate `context: just compacted` note is gone. The clock used to restart
+  at the compaction and run through yellow and red over a cache that held only
+  the replaced conversation. See [After a compaction](README.md#after-a-compaction).
 - **The binary follows the plugin version.** The dispatcher fetches the
   release named by `version` in `plugin.json` and records it, so a `git pull`
   that moves the version on now brings the matching binary instead of leaving

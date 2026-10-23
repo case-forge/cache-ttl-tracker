@@ -328,8 +328,8 @@ func TestACompactionTheHooksMissedStillShowsItsTime(t *testing.T) {
 	if !strings.Contains(out, "cache: compacted at "+want) {
 		t.Errorf("expected the compaction time %s, no clock: %q", want, out)
 	}
-	if !strings.Contains(out, "context: just compacted") {
-		t.Errorf("expected the compacted context note: %q", out)
+	if strings.Contains(out, "context") {
+		t.Errorf("the cache segment alone reports a compaction: %q", out)
 	}
 }
 

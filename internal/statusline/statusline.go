@@ -532,9 +532,9 @@ func ContextSegment(payload Payload, scan ScanResult) string {
 		return ""
 	}
 	if *scan.ContextTokens == PostCompact {
-		// Just compacted: the window is small by definition, so green is
-		// accurate, and a real figure arrives on the next turn.
-		return fmt.Sprintf("  %scontext: just compacted%s", Green, Reset)
+		// Just compacted: there is no figure to show, and the cache segment
+		// already says when. The gauge returns with the next response.
+		return ""
 	}
 	tokens := *scan.ContextTokens
 	limit := ContextLimit(payload)
@@ -658,10 +658,9 @@ func ModelSwitched(facts ScanResult, currentModel string) bool {
 	return normalizeModelID(facts.NewestModel) != normalizeModelID(currentModel)
 }
 
-// LabelSuppressedByCompaction is true while the context counter still
-// reads "just compacted": the cache clock has no advice worth giving in
-// that state: the elapsed time and expiry still show, only the imperative
-// half of Label is dropped.
+// LabelSuppressedByCompaction is true from a compaction until the next
+// response writes a real context figure. In that state the cache segment
+// reports the time of the compaction instead of a clock.
 func LabelSuppressedByCompaction(scan ScanResult) bool {
 	return scan.ContextTokens != nil && *scan.ContextTokens == PostCompact
 }

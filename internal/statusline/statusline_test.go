@@ -273,12 +273,8 @@ func TestACompactionNewerThanTheLastUsageBlockSuppressesTheFigure(t *testing.T) 
 	payload := windowPayload(1_000_000)
 	payload.TranscriptPath = path
 	payload.Model = &ModelInfo{ID: "claude-opus-5"}
-	seg := plain(ContextSegment(payload, ScanTranscript(path, "")))
-	if strings.TrimSpace(seg) != "context: just compacted" {
-		t.Errorf("got %q", seg)
-	}
-	if !strings.Contains(ContextSegment(payload, ScanTranscript(path, "")), Green) {
-		t.Error("post-compaction the window really is small, so green is accurate")
+	if seg := ContextSegment(payload, ScanTranscript(path, "")); seg != "" {
+		t.Errorf("no figure and no label until the next response; the cache segment says when: %q", seg)
 	}
 }
 
@@ -646,8 +642,11 @@ func TestAfterACompactionTheCacheSegmentSaysWhenAndShowsNoClock(t *testing.T) {
 		if !strings.Contains(out, "cache: compacted at "+want.In(time.Local).Format("15:04")) {
 			t.Errorf("%d min: expected the compaction time, got %q", minutes, out)
 		}
-		if !strings.Contains(out, "context: just compacted") {
-			t.Errorf("%d min: expected context: just compacted, got %q", minutes, out)
+		if strings.Contains(out, "context") {
+			t.Errorf("%d min: the cache segment alone reports a compaction: %q", minutes, out)
+		}
+		if !strings.HasSuffix(strings.TrimSuffix(out, "\n"), want.In(time.Local).Format("15:04")) {
+			t.Errorf("%d min: the line should end at the time, with no stray spacing: %q", minutes, out)
 		}
 		for _, banned := range []string{"warm", "cooling", "expiring", "cold", "TTL", " / "} {
 			if strings.Contains(out, banned) {
