@@ -1,7 +1,13 @@
 name: release
 
+# A release is published when the version in .claude-plugin/plugin.json has
+# no release yet. That happens on a push to main (the merge that bumps the
+# version), and also when a v* tag is pushed by hand. A push to main whose
+# version already has a release does nothing.
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -10,20 +16,42 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Decide the release
+        id: release
+        run: |
+          set -e
+          version=$(jq -r .version .claude-plugin/plugin.json)
+          tag="v$version"
+          if [ "${{ github.ref_type }}" = tag ] && [ "${{ github.ref_name }}" != "$tag" ]; then
+            echo "::error::tag ${{ github.ref_name }} does not match plugin.json version $version; the dispatcher fetches v<version>"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag already has a release; nothing to do"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-go@v5
+        if: steps.release.outputs.publish == 'true'
         with:
           go-version: "1.26"
 
       - name: Cross-compile all platforms
+        if: steps.release.outputs.publish == 'true'
         run: make release
 
       - name: Create release with binaries attached
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: steps.release.outputs.publish == 'true'
         run: |
-          gh release create "${{ github.ref_name }}" bin/cache-ttl-tracker-* \
-            --title "${{ github.ref_name }}" \
+          gh release create "${{ steps.release.outputs.tag }}" bin/cache-ttl-tracker-* \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.release.outputs.tag }}" \
             --generate-notes

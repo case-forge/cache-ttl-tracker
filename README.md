@@ -35,10 +35,12 @@ base on a 1-hour TTL, on every model. Staying warm is not a nice-to-have;
 going cold is the expensive outcome. See Anthropic's
 [pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
 
-No API reports whether a conversation's cache is currently warm, so this
-infers it from elapsed time since the cache was last touched, against the
-known TTLs. Where the transcript states the real `cache_creation` figures
-outright, those override the inference.
+Claude Code reports the cache's TTL (`prompt_cache.ttl` in the status line
+payload, 2.1.251 and later) but not a countdown that starts at the moment a
+prompt is sent, and not the idle compaction deadline. So this takes the TTL
+from Claude Code and infers freshness from the time since the cache was last
+touched. Where the payload carries no TTL (an older Claude Code, or before the
+first response) it shows the one-hour default and says so: `(1h TTL assumed)`.
 
 ## What it does
 
@@ -52,8 +54,10 @@ outright, those override the inference.
 - **A `SessionStart` notice** tells you the status line needs setting up,
   until it is. Then it goes quiet for good.
 
-No background processes, no network connections of any kind, no telemetry.
-See [SECURITY.md](SECURITY.md) for exactly what it reads and writes.
+No background processes and no telemetry. The tracker itself makes no network
+connections; only the install dispatcher downloads release binaries, from this
+repo's GitHub Releases. See [SECURITY.md](SECURITY.md) for exactly what it
+reads, writes and fetches.
 
 ## Install
 
@@ -86,13 +90,18 @@ git clone https://github.com/case-forge/cache-ttl-tracker.git ~/.claude/skills/c
 
 That is the whole install, and updating is `git pull`. **Nothing to build:
 no Go toolchain, no interpreter.** `bin/cache-ttl-tracker` is a small `sh`
-dispatcher that, on first run, downloads the prebuilt binary matching your
-machine from this repo's [GitHub Releases](https://github.com/case-forge/cache-ttl-tracker/releases)
-and caches it beside itself — every run after the first is a plain local
-exec, no network involved. Shipped: Linux amd64/arm64, macOS Intel/Apple
-Silicon, Windows amd64/arm64. On anything else, or if the download fails, the
-dispatcher exits naming the exact binary it looked for and the `go build`
-line that produces it, rather than failing silently.
+dispatcher that downloads the prebuilt binary matching your machine from this
+repo's [GitHub Releases](https://github.com/case-forge/cache-ttl-tracker/releases)
+and caches it beside itself, so every run after that is a plain local exec
+with no network involved. It fetches the release named by the `version` in
+`.claude-plugin/plugin.json`, so after a `git pull` or a plugin update that
+moves the version on, the next run fetches the matching binary once and
+records which version it is. If that download fails, the binary you already
+have keeps running and the fetch is tried again at most hourly. Shipped: Linux
+amd64/arm64, macOS Intel/Apple Silicon, Windows amd64/arm64. On anything else,
+or if there is no binary and the download fails, the dispatcher exits naming
+the exact binary it looked for and the `go build` line that produces it,
+rather than failing silently.
 
 A newly cloned skills-directory plugin loads on your **next** session, so
 start Claude Code again after installing. It then appears as
@@ -123,7 +132,11 @@ silently when none did.
 
 Only needed if you are changing the code, or are on a platform we do not
 ship. `make build` for your own machine, `make release` to cross-compile all
-five from any one machine. Without `make`:
+six from any one machine. `make build` also records the plugin version beside
+the binary, so the dispatcher treats your build as current and does not
+replace it with a release download. Without `make` (the dispatcher will then
+fetch the release for the plugin version over your build, unless you write
+the version to `bin/<binary>.version` yourself):
 
 ```sh
 go build -ldflags="-s -w" -o "bin/cache-ttl-tracker-$(go env GOOS)-$(go env GOARCH)" ./cmd/cache-ttl-tracker
@@ -205,6 +218,31 @@ Two optional flag files exist, and are checked fresh on every call:
 `~/.claude/cache-ttl-tracker-quiet` (stop the setup notice) and
 `~/.claude/cache-ttl-overage-monitor.on` (see [Which TTL you are on](#which-ttl-you-are-on)).
 
+## The clock
+
+The colour follows how much of the TTL has passed. Bold marks the fresher
+half of each colour. The words are `warm`, `cooling`, `expiring` and `cold`.
+
+| Colour | 1-hour TTL | 5-minute TTL |
+| --- | --- | --- |
+| Green | 0 to 30 min | 0 to 2 min |
+| Yellow | 30 to 55 min | 2 to 4 min |
+| Red, bold (`expiring`) | 55 to 60 min | 4 to 5 min |
+| Red (`cold`) | 60 min and over | 5 min and over |
+
+The 5-minute TTL has its own scale, one band per minute, because the same
+fractions of five minutes would leave only a few seconds of warning.
+
+## After a compaction
+
+Until your next message the cache segment reads `cache: compacted at 14:32`
+(your machine's time) with no clock. A compaction replaces the conversation
+with a short summary, so the window is small and cheap to rebuild; the cache
+still warm behind it holds the conversation that was just replaced, so a clock
+counting it down would only look like a warning with nothing to act on. The
+context gauge is left out as well, because there is no figure until then. The
+next response brings the clock and the gauge back.
+
 ## Rewrites
 
 When a request found under a tenth of its context in the cache and the context
@@ -246,8 +284,8 @@ follows it:
   of `cold by HH:MM`.
 - **From about 49 minutes** the red label reads `compacting in 5m`, counting
   down, in place of `expiring`.
-- **After the compaction** the clock restarts green: the window is small and
-  freshly summarised.
+- **After the compaction** the clock gives way to `compacted at HH:MM` until
+  your next message; see [After a compaction](#after-a-compaction).
 
 This is Claude Code behaviour, not an API guarantee, so the notice appears only
 while all of these hold, each re-checked on every refresh:
@@ -278,9 +316,10 @@ Three states, of which only two need anything from you:
 
 - **On included usage** (1-hour TTL). The default, nothing to do.
 - **In paid overage** (5-minute TTL). Create the flag file below.
-- **Measured.** Always on underneath both. The instant the transcript's own
-  `cache_creation` figures show a real write, that ground truth overrides
-  whichever assumption is set.
+- **Measured.** Always on underneath both. The TTL Claude Code reports in
+  `prompt_cache.ttl` overrides whichever assumption is set. Without it the
+  flag file below decides, and with no flag file the one-hour default is
+  shown, labelled `(1h TTL assumed)`.
 
 ```sh
 touch ~/.claude/cache-ttl-overage-monitor.on   # 5-minute TTL
@@ -301,11 +340,11 @@ above are live output from the current build.
 
 Submitted to the official plugin marketplace and awaiting review.
 
-**Known limitation, and the direction of travel.** Because no API reports
-live cache state, this is a heuristic wherever the transcript does not state
-the real TTL and cache-creation numbers outright. Leaning further on what
-the transcript actually reports, and less on elapsed-time inference, is the
-active goal rather than a finished feature.
+**Known limitation.** The TTL is measured, but the clock is still elapsed
+time since the last prompt, tool call or turn end. Claude Code's
+`prompt_cache.expires_at` and `warm` are not used: `expires_at` is computed
+from the last response rather than from the prompt that refreshed the cache,
+and neither accounts for idle compaction.
 
 ## Licence
 

@@ -28,6 +28,9 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Dispatcher download and version check
+        run: sh scripts/test-dispatcher.sh
+
       - name: Build the plugin binary
         run: go build -o /tmp/cache-ttl-tracker-ci-build ./cmd/cache-ttl-tracker
 

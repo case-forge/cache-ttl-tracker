@@ -33,6 +33,7 @@
 //
 // For the default 1h TTL that's green 0-15m/15-30m, yellow 30-45m/45-55m,
 // red 55-60m/60m+. Bold marks the fresher half of each colour's span.
+// The 5m TTL has its own minute-by-minute scale (see bracketFiveMinute).
 //
 // Red-zone is a state report, not advice: three imperatives ("send message
 // then compact", "compact now", "compact first") were removed over time
@@ -108,6 +109,35 @@ type Payload struct {
 	ContextWindow *struct {
 		Size int `json:"context_window_size"`
 	} `json:"context_window"`
+	PromptCache *PromptCache `json:"prompt_cache"`
+}
+
+// PromptCache is the part of the payload's prompt_cache object this tool
+// reads (Claude Code 2.1.251 and later). Claude Code computes it from the
+// cache token counts in the API's own responses, so its TTL is a measurement.
+// Nothing else in the object drives behaviour.
+type PromptCache struct {
+	TTL string `json:"ttl"` // "5m" or "1h"
+}
+
+// ttlSeconds is the TTL Claude Code reports for the current cached prefix,
+// or nil when the payload does not carry one (older Claude Code, no response
+// yet, a provider that reports no cache tokens) or carries a value this tool
+// does not know.
+func (p Payload) ttlSeconds() *int {
+	if p.PromptCache == nil {
+		return nil
+	}
+	var v int
+	switch p.PromptCache.TTL {
+	case "5m":
+		v = FiveMinSeconds
+	case "1h":
+		v = OneHourSeconds
+	default:
+		return nil
+	}
+	return &v
 }
 
 func (p Payload) workDir() string {
@@ -144,7 +174,6 @@ type ScanResult struct {
 	ContextTokens *int       // newest window size, any model; PostCompact or nil
 	NewestModel   string     // model on the newest usage block, whichever model that is
 	LastTouch     *time.Time // when CurrentModel last had a turn here
-	TTLSeconds    *int       // the TTL CurrentModel last wrote with
 	ReadTokens    int        // cache_read_input_tokens on CurrentModel's last turn
 	TurnRewrite   int        // largest single request this turn that re-wrote most of its context
 	CompactedAt   *time.Time // newest compaction summary, when it carries a timestamp
@@ -349,24 +378,12 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 			facts.ReadTokens = asInt(usage["cache_read_input_tokens"])
 		}
 
-		if facts.TTLSeconds == nil {
-			if creation, ok := usage["cache_creation"].(map[string]any); ok {
-				if asInt(creation["ephemeral_1h_input_tokens"]) > 0 {
-					v := OneHourSeconds
-					facts.TTLSeconds = &v
-				} else if asInt(creation["ephemeral_5m_input_tokens"]) > 0 {
-					v := FiveMinSeconds
-					facts.TTLSeconds = &v
-				}
-			}
-		}
-
 		// `!withinTurn` joins the condition deliberately: the other three
 		// facts come from the newest matching block and are settled
 		// almost immediately, so breaking on them alone would stop the
 		// scan a step or two into the turn and TurnRewrite would miss
 		// a rewrite further back in it.
-		if facts.ContextTokens != nil && facts.LastTouch != nil && facts.TTLSeconds != nil && !withinTurn {
+		if facts.ContextTokens != nil && facts.LastTouch != nil && !withinTurn {
 			break
 		}
 	}
@@ -402,6 +419,9 @@ func ContextLimit(payload Payload) int {
 // Bracket returns (colour, bold) for elapsed time as a fraction of
 // ttlSeconds.
 func Bracket(elapsed, ttlSeconds float64) (string, bool) {
+	if ttlSeconds == FiveMinSeconds {
+		return bracketFiveMinute(elapsed)
+	}
 	frac := 1.0
 	if ttlSeconds != 0 {
 		frac = elapsed / ttlSeconds
@@ -416,6 +436,30 @@ func Bracket(elapsed, ttlSeconds float64) (string, bool) {
 	case frac < 55.0/60.0:
 		return Yellow, false
 	case frac < 1.0:
+		return Red, true
+	default:
+		return Red, false
+	}
+}
+
+// bracketFiveMinute is the 5m TTL's own scale, one band per minute. The
+// fractional scale above gives a 5m cache only 25s of red before expiry,
+// which is too little warning to act on, so the 5m TTL cools after 2m and is
+// expiring for its whole last minute:
+//
+//	0-1m bold green    2-3m bold yellow    4-5m bold red (expiring)
+//	1-2m green         3-4m yellow         5m+  unbold red (cold)
+func bracketFiveMinute(elapsed float64) (string, bool) {
+	switch {
+	case elapsed < 60:
+		return Green, true
+	case elapsed < 120:
+		return Green, false
+	case elapsed < 180:
+		return Yellow, true
+	case elapsed < 240:
+		return Yellow, false
+	case elapsed < FiveMinSeconds:
 		return Red, true
 	default:
 		return Red, false
@@ -488,9 +532,9 @@ func ContextSegment(payload Payload, scan ScanResult) string {
 		return ""
 	}
 	if *scan.ContextTokens == PostCompact {
-		// Just compacted: the window is small by definition, so green is
-		// accurate, and a real figure arrives on the next turn.
-		return fmt.Sprintf("  %scontext: just compacted%s", Green, Reset)
+		// Just compacted: there is no figure to show, and the cache segment
+		// already says when. The gauge returns with the next response.
+		return ""
 	}
 	tokens := *scan.ContextTokens
 	limit := ContextLimit(payload)
@@ -614,10 +658,9 @@ func ModelSwitched(facts ScanResult, currentModel string) bool {
 	return normalizeModelID(facts.NewestModel) != normalizeModelID(currentModel)
 }
 
-// LabelSuppressedByCompaction is true while the context counter still
-// reads "just compacted": the cache clock has no advice worth giving in
-// that state: the elapsed time and expiry still show, only the imperative
-// half of Label is dropped.
+// LabelSuppressedByCompaction is true from a compaction until the next
+// response writes a real context figure. In that state the cache segment
+// reports the time of the compaction instead of a clock.
 func LabelSuppressedByCompaction(scan ScanResult) bool {
 	return scan.ContextTokens != nil && *scan.ContextTokens == PostCompact
 }
@@ -673,6 +716,11 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	// The single read. Everything transcript-derived below comes off this
 	// one scan; nothing after this line may re-read the transcript.
 	scan := ScanTranscript(payload.TranscriptPath, currentModel)
+	// The TTL is Claude Code's own report, a measurement taken by the
+	// program that made the request. A payload without one (Claude Code
+	// older than 2.1.251, or no response yet) is shown as the 1h default,
+	// labelled as assumed.
+	ttl := payload.ttlSeconds()
 
 	// Resolved before the state-file read so the "no messages yet" line
 	// carries them too: that is the one moment a fresh session has
@@ -720,6 +768,20 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		return
 	}
 
+	// Until the next response the window is the freshly written summary,
+	// small and cheap to rebuild, so there is no cache worth watching: the
+	// clock would only count down a cache holding the conversation that was
+	// just replaced. Say when it happened and show nothing to act on.
+	if LabelSuppressedByCompaction(scan) {
+		at := last
+		if scan.CompactedAt != nil {
+			at = *scan.CompactedAt
+		}
+		fmt.Fprintf(stdout, "%s%scache: compacted at %s%s%s\n",
+			model, Green, at.In(tz).Format("15:04"), Reset, trailer)
+		return
+	}
+
 	var colour string
 	var detailBold bool
 	var label, eta string
@@ -730,8 +792,8 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	// clock below takes over, so a compaction that never came (feature
 	// removed, a different front end) degrades to the old behaviour.
 	assumedTTL := OneHourSeconds
-	if scan.TTLSeconds != nil {
-		assumedTTL = *scan.TTLSeconds
+	if ttl != nil {
+		assumedTTL = *ttl
 	} else if state.OverageMonitorOn(home) {
 		assumedTTL = FiveMinSeconds
 	}
@@ -744,8 +806,8 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 
 	if idleActive {
 		colour, detailBold, label, eta = IdleCompactView(elapsed, last, tz, postRedReminder)
-	} else if scan.TTLSeconds != nil {
-		measuredTTL := *scan.TTLSeconds
+	} else if ttl != nil {
+		measuredTTL := *ttl
 		// Measured beats both the flag file and the ambiguity it forces:
 		// with the real TTL there is no "warm on plan / cold if overage"
 		// to hedge about.
@@ -795,16 +857,7 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		if elapsed >= OneHourSeconds {
 			lead = "since"
 		}
-		eta = fmt.Sprintf("%s %s", lead, planExpiryLocal.Format("15:04"))
-	}
-
-	// Drop the imperative, but not the state word, while "just
-	// compacted" is still up. Both suppressors do the same thing for the
-	// same reason: the cache was just written (or a message was just sent
-	// instead of compacting), so no advice about what to do next applies,
-	// but the reader can still see whether it's warm.
-	if LabelSuppressedByCompaction(scan) {
-		label = StateWord(colour, detailBold)
+		eta = fmt.Sprintf("%s %s (1h TTL assumed)", lead, planExpiryLocal.Format("15:04"))
 	}
 
 	detailWeight := ""
