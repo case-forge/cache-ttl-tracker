@@ -1,14 +1,23 @@
 #!/bin/sh
-# Platform dispatcher: downloads (once) and runs the binary matching this
-# machine, from this repo's own GitHub Releases.
+# Platform dispatcher: downloads (once per release) and runs the binary
+# matching this machine, from this repo's own GitHub Releases.
 #
 # This exists so installing the plugin is `git clone` (or `git pull`) and
 # nothing else: no Go toolchain, no build step, no interpreter. Binaries are
 # NOT committed to this repo (they used to be -- that grew git history by
 # ~12MB per release forever, unreclaimable without a history rewrite); this
-# script fetches the matching one from the latest GitHub Release on first
-# run and caches it beside itself, so every run after the first is a plain
-# local exec with no network involved.
+# script fetches the matching one from the GitHub Release and caches it
+# beside itself, so every run after that is a plain local exec with no
+# network involved.
+#
+# The binary is kept in step with the checkout: the version in
+# .claude-plugin/plugin.json names the release to fetch, and the version the
+# cached binary came from is recorded beside it (<binary>.version). After a
+# `git pull` or a plugin update moves the version on, the next run fetches
+# the matching release once. If that fetch fails and a binary is already
+# there, the old one keeps running and the fetch is retried at most hourly.
+# `make build` records the current version too, so a local build is never
+# replaced.
 #
 # hooks.json and the statusLine command both reference THIS path, so the
 # name must stay stable; the per-platform binaries carry the suffix.
@@ -16,11 +25,16 @@
 # Claude Code runs hook/statusline commands through a POSIX shell on every
 # platform, including Windows (Git Bash, not PowerShell or cmd), so a plain
 # /bin/sh script is portable here in a way a .bat/.ps1 pair would not be.
+#
+# This runs on every status line refresh, so the version check uses shell
+# builtins only: no sed, no cat, no process forks on the common path.
 
 set -e
 
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo="case-forge/cache-ttl-tracker"
+# Overridable so the dispatcher test can serve releases from a local folder.
+releases="${CACHE_TTL_TRACKER_RELEASES_URL:-https://github.com/$repo/releases}"
 
 case "$(uname -s)" in
 	Linux*)  os=linux ;;
@@ -38,32 +52,111 @@ esac
 ext=
 [ "$os" = windows ] && ext=.exe
 
-binary="$dir/cache-ttl-tracker-$os-$arch$ext"
+asset="cache-ttl-tracker-$os-$arch$ext"
+binary="$dir/$asset"
 
+# The version this checkout expects: plugin.json's "version". Empty when it
+# cannot be read, which switches the check off.
+want=
+manifest="$dir/../.claude-plugin/plugin.json"
+if [ -r "$manifest" ]; then
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+			*'"version"'*)
+				want=${line#*'"version"'}
+				want=${want#*\"}
+				want=${want%%\"*}
+				break ;;
+		esac
+	done < "$manifest"
+fi
+case $want in
+	*[!0-9A-Za-z._-]*) want= ;;
+esac
+
+# The version the cached binary was fetched for.
+have=
+if [ -r "$binary.version" ]; then
+	IFS= read -r have < "$binary.version" || true
+fi
+
+stale=
 if [ ! -x "$binary" ]; then
-	url="https://github.com/$repo/releases/latest/download/cache-ttl-tracker-$os-$arch$ext"
+	stale=1
+elif [ -n "$want" ] && [ "$have" != "$want" ]; then
+	stale=1
+	# A failed fetch for this version is not retried on every refresh.
+	if [ -f "$binary.attempt" ]; then
+		tried=
+		IFS= read -r tried < "$binary.attempt" || true
+		if [ "$tried" = "$want" ] && [ -n "$(find "$binary.attempt" -mmin -60 2>/dev/null)" ]; then
+			stale=
+		fi
+	fi
+fi
 
+if [ -n "$stale" ]; then
 	if command -v curl >/dev/null 2>&1; then
 		fetch="curl -fsSL -o"
 	elif command -v wget >/dev/null 2>&1; then
 		fetch="wget -q -O"
 	else
-		echo "cache-ttl-tracker: no binary at $binary and neither curl nor wget is available to fetch one" >&2
-		echo "cache-ttl-tracker: download it yourself from $url and save it to that path" >&2
-		exit 1
+		fetch=
 	fi
 
-	echo "cache-ttl-tracker: first run for $os/$arch, downloading from $url" >&2
-	tmp="$binary.download"
-	if ! $fetch "$tmp" "$url"; then
-		rm -f "$tmp"
-		echo "cache-ttl-tracker: download failed ($url)" >&2
-		echo "cache-ttl-tracker: check network access, or build one with:" >&2
-		echo "  go build -ldflags=\"-s -w\" -o \"$binary\" ./cmd/cache-ttl-tracker" >&2
-		exit 1
+	if [ -z "$fetch" ]; then
+		if [ ! -x "$binary" ]; then
+			echo "cache-ttl-tracker: no binary at $binary and neither curl nor wget is available to fetch one" >&2
+			echo "cache-ttl-tracker: download it yourself from $releases/latest/download/$asset and save it to that path" >&2
+			exit 1
+		fi
+	else
+		tmp="$binary.download"
+		got=
+		if [ -n "$want" ]; then
+			echo "cache-ttl-tracker: fetching v$want for $os/$arch" >&2
+			if $fetch "$tmp" "$releases/download/v$want/$asset"; then
+				got=$want
+			fi
+		fi
+		# With no binary at all, any release beats none.
+		if [ -z "$got" ] && [ ! -x "$binary" ]; then
+			echo "cache-ttl-tracker: first run for $os/$arch, downloading the latest release" >&2
+			if $fetch "$tmp" "$releases/latest/download/$asset"; then
+				got=latest
+			fi
+		fi
+
+		if [ -z "$got" ]; then
+			rm -f "$tmp"
+			if [ ! -x "$binary" ]; then
+				echo "cache-ttl-tracker: download failed ($releases/latest/download/$asset)" >&2
+				echo "cache-ttl-tracker: check network access, or build one with:" >&2
+				echo "  go build -ldflags=\"-s -w\" -o \"$binary\" ./cmd/cache-ttl-tracker" >&2
+				exit 1
+			fi
+			echo "cache-ttl-tracker: v$want is not available yet; keeping the installed binary" >&2
+			printf '%s\n' "$want" > "$binary.attempt"
+		else
+			chmod +x "$tmp"
+			# Replacing a running binary can fail (Windows); try again later.
+			if mv -f "$tmp" "$binary" 2>/dev/null; then
+				if [ "$got" = latest ]; then
+					# Not known to match this checkout: look for the exact release later.
+					rm -f "$binary.version"
+					if [ -n "$want" ]; then
+						printf '%s\n' "$want" > "$binary.attempt"
+					fi
+				else
+					printf '%s\n' "$got" > "$binary.version"
+					rm -f "$binary.attempt"
+				fi
+			else
+				rm -f "$tmp"
+				printf '%s\n' "$want" > "$binary.attempt"
+			fi
+		fi
 	fi
-	chmod +x "$tmp"
-	mv "$tmp" "$binary"
 fi
 
 exec "$binary" "$@"

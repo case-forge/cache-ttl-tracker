@@ -15,9 +15,19 @@ before disclosing publicly.
 
 Useful context when judging whether something is a security issue.
 
-**It makes no network connections of any kind.** There is no telemetry, no
-update check, and no outbound request anywhere in the code. It has zero
-third-party dependencies: the Go standard library only.
+**The tracker makes no network connections and sends no telemetry.** The Go
+program has no update check and no outbound request anywhere in its code, and
+zero third-party dependencies: the Go standard library only.
+
+**The one thing that touches the network is the install dispatcher,
+`bin/cache-ttl-tracker`**, a shell script. It downloads the release binary for
+your machine from this repository's GitHub Releases
+(`https://github.com/case-forge/cache-ttl-tracker/releases`) on first run, and
+again when the `version` in `.claude-plugin/plugin.json` changes. The request
+carries nothing but the URL. The download is over HTTPS to GitHub and is not
+checked against a separate signature or checksum, so it is as trustworthy as
+this repository's releases. If the download fails, an existing binary keeps
+running and the fetch is retried at most hourly.
 
 **Files it reads**
 
@@ -33,6 +43,9 @@ third-party dependencies: the Go standard library only.
 
 - Its own state under `~/.claude/cache-ttl-track-core/`, created `0755`,
   files `0644`, containing only a timestamp and a boolean.
+- Beside the dispatcher, in the plugin's `bin/`: the downloaded binary, a
+  `<binary>.version` file holding the plugin version it was fetched for, and a
+  `<binary>.attempt` file when a fetch failed.
 - `~/.claude/settings.json`, **only** when you explicitly run
   `cache-ttl-tracker install`. It backs the file up to `settings.json.bak`
   first, re-parses the result before writing, and refuses to touch a file it
@@ -40,7 +53,8 @@ third-party dependencies: the Go standard library only.
 
 **What it deliberately does not do:** read your prompts or responses beyond
 the token accounting above, execute anything from the transcript, write
-outside `~/.claude/`, or run any background process.
+outside `~/.claude/` and its own install directory, or run any background
+process.
 
 ## Notes for reviewers
 
