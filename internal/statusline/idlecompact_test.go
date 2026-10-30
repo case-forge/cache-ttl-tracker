@@ -325,7 +325,7 @@ func TestACompactionTheHooksMissedStillShowsItsTime(t *testing.T) {
 	out := renderIdle(t, home, path, "2.1.299", 54*60+30)
 	compacted, _ := time.Parse(time.RFC3339Nano, stamp)
 	want := compacted.In(time.Local).Format("15:04")
-	if !strings.Contains(out, "cache: compacted 1m / since "+want) {
+	if !strings.Contains(out, "cache: compacted 01:30 / since "+want) {
 		t.Errorf("expected the age and compaction time %s: %q", want, out)
 	}
 	if strings.Contains(out, "context") {

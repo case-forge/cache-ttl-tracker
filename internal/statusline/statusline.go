@@ -618,31 +618,21 @@ func RewriteSegment(scan ScanResult) string {
 	return fmt.Sprintf("  %s%s %s%s", colour, strings.Repeat("$", tier), formatDecimalMillions(scan.TurnRewrite), Reset)
 }
 
-// ElapsedClock renders MM:SS while the TTL is still counting down, h+m once
-// it is long past. Under an hour the clock is counting toward something and
-// the red zone is scored in minutes, so the seconds earn their place. Past
-// an hour the cache is cold on either TTL and plain MM:SS would keep
-// counting into "300:00", asking the reader to divide to learn a session
-// has been idle five hours.
+// ElapsedClock is the one clock both the cold and the compacted segments
+// use. It renders MM:SS while under an hour, where the seconds earn their
+// place, then from the largest unit that is not zero down to minutes:
+// "5h05m", "1d0h00m", "1w1d8h05m", "2mo1w3d4h05m", "1y2mo3w4d5h06m". Plain
+// MM:SS past an hour would keep counting into "300:00" and ask the reader to
+// divide. "mo" is months, so "m" only ever means minutes. A month is 30 days
+// and a year 365, which is close enough for a figure read as "about this
+// long".
 func ElapsedClock(elapsed float64) string {
-	minutes := int(elapsed) / 60
-	if minutes >= 60 {
-		return fmt.Sprintf("%dh%02dm", minutes/60, minutes%60)
+	if elapsed < 0 {
+		elapsed = 0
 	}
-	seconds := int(elapsed) % 60
-	return fmt.Sprintf("%02d:%02d", minutes, seconds)
-}
-
-// CompactedAgo renders how long ago a compaction happened, from the largest
-// unit that is not zero down to minutes: "12m", "5h05m", "8d8h05m",
-// "1w1d8h05m", "2mo1w3d4h05m", "1y2mo3w4d5h06m". Unlike ElapsedClock it counts
-// nothing down, so it has no seconds. "mo" is months, so that "m" only ever
-// means minutes. A month is 30 days and a year 365, which is close enough for
-// a figure that is read as "about this long".
-func CompactedAgo(elapsed float64) string {
 	minutes := int(elapsed) / 60
-	if minutes < 0 {
-		minutes = 0
+	if minutes < 60 {
+		return fmt.Sprintf("%02d:%02d", minutes, int(elapsed)%60)
 	}
 	days := minutes / 1440
 	years := days / 365
@@ -651,24 +641,19 @@ func CompactedAgo(elapsed float64) string {
 	days %= 30
 	weeks := days / 7
 	days %= 7
-	hours, mins := minutes/60%24, minutes%60
 
 	var b strings.Builder
 	started := false
 	for _, u := range []struct {
 		n    int
 		unit string
-	}{{years, "y"}, {months, "mo"}, {weeks, "w"}, {days, "d"}, {hours, "h"}} {
+	}{{years, "y"}, {months, "mo"}, {weeks, "w"}, {days, "d"}, {minutes / 60 % 24, "h"}} {
 		if started || u.n > 0 {
 			fmt.Fprintf(&b, "%d%s", u.n, u.unit)
 			started = true
 		}
 	}
-	if started {
-		fmt.Fprintf(&b, "%02dm", mins)
-	} else {
-		fmt.Fprintf(&b, "%dm", mins)
-	}
+	fmt.Fprintf(&b, "%02dm", minutes%60)
 	return b.String()
 }
 
@@ -818,7 +803,7 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		}
 		fmt.Fprintf(stdout, "%s%s%scache: compacted%s %s%s / since %s%s%s\n",
 			model, Green, Bold, Reset,
-			Green, CompactedAgo(now.Sub(at).Seconds()), at.In(tz).Format("15:04"), Reset, trailer)
+			Green, ElapsedClock(now.Sub(at).Seconds()), at.In(tz).Format("15:04"), Reset, trailer)
 		return
 	}
 

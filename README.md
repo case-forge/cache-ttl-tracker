@@ -40,7 +40,13 @@ payload, 2.1.251 and later) but not a countdown that starts at the moment a
 prompt is sent, and not the idle compaction deadline. So this takes the TTL
 from Claude Code and infers freshness from the time since the cache was last
 touched. Where the payload carries no TTL (an older Claude Code, or before the
-first response) it shows the clock on the one-hour default and names no TTL and forecasts no expiry time; past the hour it adds `since HH:MM`, and the TTL and the forecast appear with the first response that reports one.
+first response) it shows the clock on the one-hour default and names no TTL.
+It forecasts no expiry time, but once an hour has passed it adds `since HH:MM`,
+which is the last cache touch plus the assumed hour. That is deliberately
+approximate: for a session that has sat for hours or days, the 55 minutes
+between a 5-minute and a 1-hour TTL do not matter, and most plans use the
+1-hour TTL. The TTL and the forecast appear with the first response that
+reports one.
 
 ## What it does
 
@@ -236,8 +242,9 @@ fractions of five minutes would leave only a few seconds of warning.
 ## After a compaction
 
 Until your next message the cache segment reads
-`cache: compacted 12m / since 14:32` (your machine's time), in green, with the
-heading in bold. The age runs from `12m` through `5h05m` and `1w1d8h05m` up to
+`cache: compacted 12:34 / since 14:32` (your machine's time), in green, with the
+heading in bold. The age is the same clock the cold state uses: `MM:SS` under
+an hour, then `5h05m`, `1d0h00m` from 24 hours, `1w1d8h05m`, up to
 `1y2mo3w4d5h06m` (`mo` is months, so `m` is only ever minutes); it is a
 running time since, not a countdown. A compaction replaces the conversation
 with a short summary, so the window is small and cheap to rebuild; the cache

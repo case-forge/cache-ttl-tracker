@@ -1060,8 +1060,19 @@ func TestTheClockConvertsToHoursRatherThanRunningTo300(t *testing.T) {
 }
 
 func TestTheClockIsNotCapped(t *testing.T) {
-	if got := ElapsedClock(86400 * 2); got != "48h00m" {
-		t.Errorf("got %q, want 48h00m", got)
+	for secs, want := range map[float64]string{
+		24*3600 - 1: "23h59m", 24 * 3600: "1d0h00m", 86400 * 2: "2d0h00m",
+		6*86400 + 23*3600: "6d23h00m", 7 * 86400: "1w0d0h00m",
+		200*3600 + 5*60: "1w1d8h05m", 30 * 86400: "1mo0w0d0h00m",
+		75*86400 + 4*3600 + 6*60: "2mo2w1d4h06m", 365 * 86400: "1y0mo0w0d0h00m",
+		400*86400 + 5*3600 + 6*60: "1y1mo0w5d5h06m",
+	} {
+		if got := ElapsedClock(secs); got != want {
+			t.Errorf("ElapsedClock(%v) = %q, want %q", secs, got, want)
+		}
+	}
+	if got := ElapsedClock(-5); got != "00:00" {
+		t.Errorf("a clock set ahead must read 00:00, got %q", got)
 	}
 }
 
@@ -1186,24 +1197,6 @@ func TestThePayloadTTLFeedsTheIdleCompactionGate(t *testing.T) {
 	out := renderWithCache(t, dir, path, "claude-opus-5", 30, map[string]any{"ttl": "5m"})
 	if strings.Contains(out, "idle compaction") {
 		t.Errorf("a 5m TTL must not arm idle compaction: %q", out)
-	}
-}
-
-func TestCompactedAgoSpansMinutesToYears(t *testing.T) {
-	for _, c := range []struct {
-		secs float64
-		want string
-	}{
-		{-5, "0m"}, {0, "0m"}, {59, "0m"}, {60, "1m"}, {59*60 + 59, "59m"},
-		{3600, "1h00m"}, {5*3600 + 5*60, "5h05m"}, {24*3600 - 1, "23h59m"},
-		{24 * 3600, "1d0h00m"}, {6*86400 + 23*3600, "6d23h00m"},
-		{7 * 86400, "1w0d0h00m"}, {200*3600 + 5*60, "1w1d8h05m"},
-		{30 * 86400, "1mo0w0d0h00m"}, {75*86400 + 4*3600 + 6*60, "2mo2w1d4h06m"},
-		{365 * 86400, "1y0mo0w0d0h00m"}, {400*86400 + 5*3600 + 6*60, "1y1mo0w5d5h06m"},
-	} {
-		if got := CompactedAgo(c.secs); got != c.want {
-			t.Errorf("CompactedAgo(%v) = %q, want %q", c.secs, got, c.want)
-		}
 	}
 }
 
