@@ -50,5 +50,10 @@ fails without it, including the boundary values for any threshold.
   The dispatcher fetches the release named `v<version>`, so the tag and the
   version must match.
 - The TTL comes only from the payload's `prompt_cache.ttl`. Do not infer it
-  from the transcript.
+  from the transcript, and do not save it to a file. Without one, the clock
+  runs on the 1h default and `since HH:MM` (last touch plus 1h, shown once an
+  hour has passed) is deliberately approximate; name no TTL and forecast no
+  expiry time.
+- One clock (`ElapsedClock`) serves the cold and compacted segments; change
+  it in one place.
 - British English in prose.

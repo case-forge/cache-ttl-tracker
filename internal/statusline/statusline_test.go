@@ -630,7 +630,7 @@ func TestTheRedZoneLabelStillAppearsOnAGenuinelyOldCache(t *testing.T) {
 	}
 }
 
-func TestAfterACompactionTheCacheSegmentSaysWhenAndShowsNoClock(t *testing.T) {
+func TestAfterACompactionTheCacheSegmentShowsTimeSinceAndWhen(t *testing.T) {
 	dir := t.TempDir()
 	compact, _ := json.Marshal(map[string]any{"type": "user", "isCompactSummary": true, "timestamp": "2026-07-26T16:20:00.000Z", "message": map[string]any{"content": "s"}})
 	path := writeLines(t, dir, "compacted.jsonl",
@@ -639,8 +639,8 @@ func TestAfterACompactionTheCacheSegmentSaysWhenAndShowsNoClock(t *testing.T) {
 	want, _ := time.Parse(time.RFC3339, "2026-07-26T16:20:00Z")
 	for _, minutes := range []int{1, 47, 900} {
 		out := plain(render(t, dir, path, "claude-opus-5", minutes, false))
-		if !strings.Contains(out, "cache: compacted at "+want.In(time.Local).Format("15:04")) {
-			t.Errorf("%d min: expected the compaction time, got %q", minutes, out)
+		if !strings.Contains(out, "cache: compacted ") || !strings.Contains(out, " / since "+want.In(time.Local).Format("15:04")) {
+			t.Errorf("%d min: expected compacted, an age and the compaction time, got %q", minutes, out)
 		}
 		if strings.Contains(out, "context") {
 			t.Errorf("%d min: the cache segment alone reports a compaction: %q", minutes, out)
@@ -648,7 +648,7 @@ func TestAfterACompactionTheCacheSegmentSaysWhenAndShowsNoClock(t *testing.T) {
 		if !strings.HasSuffix(strings.TrimSuffix(out, "\n"), want.In(time.Local).Format("15:04")) {
 			t.Errorf("%d min: the line should end at the time, with no stray spacing: %q", minutes, out)
 		}
-		for _, banned := range []string{"warm", "cooling", "expiring", "cold", "TTL", " / "} {
+		for _, banned := range []string{"warm", "cooling", "expiring", "cold", "TTL"} {
 			if strings.Contains(out, banned) {
 				t.Errorf("%d min: no clock or cache state belongs here (%q): %q", minutes, banned, out)
 			}
@@ -663,7 +663,7 @@ func TestACompactionWithoutATimestampFallsBackToTheLastMessage(t *testing.T) {
 	before := time.Now().Add(-30 * time.Minute).In(time.Local).Format("15:04")
 	out := plain(render(t, dir, path, "claude-opus-5", 30, false))
 	after := time.Now().Add(-30 * time.Minute).In(time.Local).Format("15:04")
-	if !strings.Contains(out, "cache: compacted at "+before) && !strings.Contains(out, "cache: compacted at "+after) {
+	if !strings.Contains(out, "since "+before) && !strings.Contains(out, "since "+after) {
 		t.Errorf("expected %s (or %s across a minute boundary), got %q", before, after, out)
 	}
 }
@@ -675,7 +675,7 @@ func TestTheNextResponseBringsTheClockBack(t *testing.T) {
 		string(compact),
 		turnRecord("claude-opus-5", 1000, 0, 20000, "2026-07-26T16:25:00.000Z", false))
 	out := plain(render(t, dir, path, "claude-opus-5", 2, false))
-	if strings.Contains(out, "compacted at") || !strings.Contains(out, "cold by") {
+	if strings.Contains(out, "compacted") || !strings.Contains(out, "cold by") {
 		t.Errorf("a response after the compaction must restore the clock: %q", out)
 	}
 }
@@ -1060,8 +1060,19 @@ func TestTheClockConvertsToHoursRatherThanRunningTo300(t *testing.T) {
 }
 
 func TestTheClockIsNotCapped(t *testing.T) {
-	if got := ElapsedClock(86400 * 2); got != "48h00m" {
-		t.Errorf("got %q, want 48h00m", got)
+	for secs, want := range map[float64]string{
+		24*3600 - 1: "23h59m", 24 * 3600: "1d0h00m", 86400 * 2: "2d0h00m",
+		6*86400 + 23*3600: "6d23h00m", 7 * 86400: "1w0d0h00m",
+		200*3600 + 5*60: "1w1d8h05m", 30 * 86400: "1mo0w0d0h00m",
+		75*86400 + 4*3600 + 6*60: "2mo2w1d4h06m", 365 * 86400: "1y0mo0w0d0h00m",
+		400*86400 + 5*3600 + 6*60: "1y1mo0w5d5h06m",
+	} {
+		if got := ElapsedClock(secs); got != want {
+			t.Errorf("ElapsedClock(%v) = %q, want %q", secs, got, want)
+		}
+	}
+	if got := ElapsedClock(-5); got != "00:00" {
+		t.Errorf("a clock set ahead must read 00:00, got %q", got)
 	}
 }
 
@@ -1144,7 +1155,7 @@ func TestThePayloadCanReportFiveMinutesOverAnHourInTheTranscript(t *testing.T) {
 	}
 }
 
-func TestWithoutAReportedTTLTheOneHourDefaultIsShownAsAssumed(t *testing.T) {
+func TestWithoutAReportedTTLSinceAppearsOnlyOncePastTheHour(t *testing.T) {
 	dir := t.TempDir()
 	// The transcript says a five-minute write. It is not consulted.
 	path := writeLines(t, dir, "t.jsonl", turnRecord("claude-opus-5", 0, 1334, 50000, "", false))
@@ -1155,8 +1166,18 @@ func TestWithoutAReportedTTLTheOneHourDefaultIsShownAsAssumed(t *testing.T) {
 		"unknown ttl": map[string]any{"ttl": "24h"},
 	} {
 		out := renderWithCache(t, dir, path, "claude-opus-5", 10, cache)
-		if !strings.Contains(out, "cold by") || !strings.Contains(out, "(1h TTL assumed)") {
-			t.Errorf("%s: expected the 1h default, labelled assumed: %q", name, out)
+		if strings.Contains(out, "TTL") || strings.Contains(out, "cold by") || strings.Contains(out, "since") {
+			t.Errorf("%s: no TTL is known, so none is named and no expiry forecast: %q", name, out)
+		}
+		if strings.Contains(plain(out), " / ") {
+			t.Errorf("%s: inside the hour no time is shown: %q", name, out)
+		}
+		old := plain(renderWithCache(t, dir, path, "claude-opus-5", 200*60, cache))
+		if !strings.Contains(old, "cold ") || !strings.Contains(old, " / since ") || strings.Contains(old, "TTL") {
+			t.Errorf("%s: past the hour, since with no TTL named: %q", name, old)
+		}
+		if !strings.Contains(plain(out), "cache: warm 10:00") {
+			t.Errorf("%s: the clock should still run on the 1h default: %q", name, out)
 		}
 		if strings.Contains(out, "5m") {
 			t.Errorf("%s: the transcript's write must not set the TTL: %q", name, out)
@@ -1176,5 +1197,20 @@ func TestThePayloadTTLFeedsTheIdleCompactionGate(t *testing.T) {
 	out := renderWithCache(t, dir, path, "claude-opus-5", 30, map[string]any{"ttl": "5m"})
 	if strings.Contains(out, "idle compaction") {
 		t.Errorf("a 5m TTL must not arm idle compaction: %q", out)
+	}
+}
+
+func TestCompactedIsBoldGreenAndTheAgeAndTimeAreGreenNotBold(t *testing.T) {
+	dir := t.TempDir()
+	compact, _ := json.Marshal(map[string]any{"type": "user", "isCompactSummary": true, "timestamp": "2026-07-26T16:20:00.000Z", "message": map[string]any{"content": "s"}})
+	path := writeLines(t, dir, "compacted.jsonl",
+		turnRecord("claude-opus-5", 1000, 0, 200000, "2026-07-26T16:00:00.000Z", false), string(compact))
+	raw := render(t, dir, path, "claude-opus-5", 5, false)
+	if !strings.Contains(raw, Green+Bold+"cache: compacted"+Reset+" "+Green) {
+		t.Errorf("heading must be bold green, then green: %q", raw)
+	}
+	tail := raw[strings.Index(raw, "cache: compacted"):]
+	if strings.Contains(tail[strings.Index(tail, Reset):], Bold) {
+		t.Errorf("only the heading is bold: %q", raw)
 	}
 }

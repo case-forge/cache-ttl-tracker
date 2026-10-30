@@ -248,8 +248,8 @@ func TestPastFiftyFourMinutesWithNoCompactionTheOrdinaryClockTakesOver(t *testin
 	home := t.TempDir()
 	path := bigWindow(t, home, 250_000)
 	out := renderIdle(t, home, path, "2.1.299", 56*60)
-	if !strings.Contains(out, "expiring") || !strings.Contains(out, "cold by") {
-		t.Errorf("a compaction that never came must fall back to the plain clock: %q", out)
+	if !strings.Contains(out, "expiring") || strings.Contains(out, "cold by") {
+		t.Errorf("a compaction that never came must fall back to the plain clock, with no forecast: %q", out)
 	}
 	out = renderIdle(t, home, path, "2.1.299", 65*60)
 	if !strings.Contains(out, "cache: cold") {
@@ -262,7 +262,7 @@ func TestUnderTheFloorTheCacheStillGoesColdAtTheTTL(t *testing.T) {
 	home := t.TempDir()
 	path := bigWindow(t, home, 150_000)
 	out := renderIdle(t, home, path, "2.1.299", 56*60)
-	if strings.Contains(out, "compact") || !strings.Contains(out, "expiring") || !strings.Contains(out, "cold by") {
+	if strings.Contains(out, "compact") || !strings.Contains(out, "expiring") || strings.Contains(out, "cold by") {
 		t.Errorf("under 200k nothing changes: %q", out)
 	}
 }
@@ -325,8 +325,8 @@ func TestACompactionTheHooksMissedStillShowsItsTime(t *testing.T) {
 	out := renderIdle(t, home, path, "2.1.299", 54*60+30)
 	compacted, _ := time.Parse(time.RFC3339Nano, stamp)
 	want := compacted.In(time.Local).Format("15:04")
-	if !strings.Contains(out, "cache: compacted at "+want) {
-		t.Errorf("expected the compaction time %s, no clock: %q", want, out)
+	if !strings.Contains(out, "cache: compacted 01:30 / since "+want) {
+		t.Errorf("expected the age and compaction time %s: %q", want, out)
 	}
 	if strings.Contains(out, "context") {
 		t.Errorf("the cache segment alone reports a compaction: %q", out)

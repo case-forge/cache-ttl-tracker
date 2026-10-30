@@ -20,7 +20,7 @@ func TestSanitizeSessionIDStripsUnsafeCharacters(t *testing.T) {
 	}
 }
 
-func TestTimestampRoundTripsAndAcceptsPythonsOffsetForm(t *testing.T) {
+func TestTimestampRoundTripsAndAcceptsAnOffsetForm(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	formatted := FormatTimestamp(now)
 	parsed, err := ParseTimestamp(formatted)
@@ -31,12 +31,10 @@ func TestTimestampRoundTripsAndAcceptsPythonsOffsetForm(t *testing.T) {
 		t.Errorf("round trip mismatch: %v != %v", parsed, now)
 	}
 
-	// A state file written by the retired Python build uses "+00:00"
-	// instead of "Z", and must still parse so an upgrade doesn't orphan an
-	// in-flight session's state.
-	pythonStyle := "2026-08-25T00:28:00+00:00"
-	if _, err := ParseTimestamp(pythonStyle); err != nil {
-		t.Errorf("failed to parse Python-style offset timestamp: %v", err)
+	// "+00:00" instead of "Z" is the same instant and must parse.
+	offsetForm := "2026-08-25T00:28:00+00:00"
+	if _, err := ParseTimestamp(offsetForm); err != nil {
+		t.Errorf("failed to parse offset-form timestamp: %v", err)
 	}
 }
 

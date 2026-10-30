@@ -618,19 +618,43 @@ func RewriteSegment(scan ScanResult) string {
 	return fmt.Sprintf("  %s%s %s%s", colour, strings.Repeat("$", tier), formatDecimalMillions(scan.TurnRewrite), Reset)
 }
 
-// ElapsedClock renders MM:SS while the TTL is still counting down, h+m once
-// it is long past. Under an hour the clock is counting toward something and
-// the red zone is scored in minutes, so the seconds earn their place. Past
-// an hour the cache is cold on either TTL and plain MM:SS would keep
-// counting into "300:00", asking the reader to divide to learn a session
-// has been idle five hours.
+// ElapsedClock is the one clock both the cold and the compacted segments
+// use. It renders MM:SS while under an hour, where the seconds earn their
+// place, then from the largest unit that is not zero down to minutes:
+// "5h05m", "1d0h00m", "1w1d8h05m", "2mo1w3d4h05m", "1y2mo3w4d5h06m". Plain
+// MM:SS past an hour would keep counting into "300:00" and ask the reader to
+// divide. "mo" is months, so "m" only ever means minutes. A month is 30 days
+// and a year 365, which is close enough for a figure read as "about this
+// long".
 func ElapsedClock(elapsed float64) string {
-	minutes := int(elapsed) / 60
-	if minutes >= 60 {
-		return fmt.Sprintf("%dh%02dm", minutes/60, minutes%60)
+	if elapsed < 0 {
+		elapsed = 0
 	}
-	seconds := int(elapsed) % 60
-	return fmt.Sprintf("%02d:%02d", minutes, seconds)
+	minutes := int(elapsed) / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%02d:%02d", minutes, int(elapsed)%60)
+	}
+	days := minutes / 1440
+	years := days / 365
+	days %= 365
+	months := days / 30
+	days %= 30
+	weeks := days / 7
+	days %= 7
+
+	var b strings.Builder
+	started := false
+	for _, u := range []struct {
+		n    int
+		unit string
+	}{{years, "y"}, {months, "mo"}, {weeks, "w"}, {days, "d"}, {minutes / 60 % 24, "h"}} {
+		if started || u.n > 0 {
+			fmt.Fprintf(&b, "%d%s", u.n, u.unit)
+			started = true
+		}
+	}
+	fmt.Fprintf(&b, "%02dm", minutes%60)
+	return b.String()
 }
 
 // ModelSwitched reports whether the model has changed to one with no cache
@@ -718,8 +742,8 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	scan := ScanTranscript(payload.TranscriptPath, currentModel)
 	// The TTL is Claude Code's own report, a measurement taken by the
 	// program that made the request. A payload without one (Claude Code
-	// older than 2.1.251, or no response yet) is shown as the 1h default,
-	// labelled as assumed.
+	// older than 2.1.251, or no response yet) shows the clock on the 1h
+	// default and names no TTL.
 	ttl := payload.ttlSeconds()
 
 	// Resolved before the state-file read so the "no messages yet" line
@@ -777,8 +801,9 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		if scan.CompactedAt != nil {
 			at = *scan.CompactedAt
 		}
-		fmt.Fprintf(stdout, "%s%scache: compacted at %s%s%s\n",
-			model, Green, at.In(tz).Format("15:04"), Reset, trailer)
+		fmt.Fprintf(stdout, "%s%s%scache: compacted%s %s%s / since %s%s%s\n",
+			model, Green, Bold, Reset,
+			Green, ElapsedClock(now.Sub(at).Seconds()), at.In(tz).Format("15:04"), Reset, trailer)
 		return
 	}
 
@@ -853,11 +878,16 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		} else {
 			label = Label(colour, detailBold, true)
 		}
-		lead := "cold by"
+		// No measured TTL, so no expiry time to forecast and no TTL to
+		// name: the clock and colour stay on the 1h default. Once the hour
+		// has passed the cache is cold on either TTL, so "since" is safe to
+		// show (a past time, at worst a few minutes out after hours of
+		// idling). Inside the hour any time would be a forecast on a
+		// guess, so none is shown. The TTL and the forecast come back with
+		// the next response that reports one.
 		if elapsed >= OneHourSeconds {
-			lead = "since"
+			eta = "since " + planExpiryLocal.Format("15:04")
 		}
-		eta = fmt.Sprintf("%s %s (1h TTL assumed)", lead, planExpiryLocal.Format("15:04"))
 	}
 
 	detailWeight := ""
@@ -868,7 +898,10 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	if label != "" {
 		heading = "cache: " + label
 	}
-	fmt.Fprintf(stdout, "%s%s%s%s%s %s%s%s / %s%s%s\n",
+	if eta != "" {
+		eta = " / " + eta
+	}
+	fmt.Fprintf(stdout, "%s%s%s%s%s %s%s%s%s%s%s\n",
 		model, colour, Bold, heading, Reset,
 		colour, detailWeight, elapsedClock, eta, Reset, trailer)
 }
