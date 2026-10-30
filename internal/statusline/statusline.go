@@ -633,6 +633,45 @@ func ElapsedClock(elapsed float64) string {
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
+// CompactedAgo renders how long ago a compaction happened, from the largest
+// unit that is not zero down to minutes: "12m", "5h05m", "8d8h05m",
+// "1w1d8h05m", "2mo1w3d4h05m", "1y2mo3w4d5h06m". Unlike ElapsedClock it counts
+// nothing down, so it has no seconds. "mo" is months, so that "m" only ever
+// means minutes. A month is 30 days and a year 365, which is close enough for
+// a figure that is read as "about this long".
+func CompactedAgo(elapsed float64) string {
+	minutes := int(elapsed) / 60
+	if minutes < 0 {
+		minutes = 0
+	}
+	days := minutes / 1440
+	years := days / 365
+	days %= 365
+	months := days / 30
+	days %= 30
+	weeks := days / 7
+	days %= 7
+	hours, mins := minutes/60%24, minutes%60
+
+	var b strings.Builder
+	started := false
+	for _, u := range []struct {
+		n    int
+		unit string
+	}{{years, "y"}, {months, "mo"}, {weeks, "w"}, {days, "d"}, {hours, "h"}} {
+		if started || u.n > 0 {
+			fmt.Fprintf(&b, "%d%s", u.n, u.unit)
+			started = true
+		}
+	}
+	if started {
+		fmt.Fprintf(&b, "%02dm", mins)
+	} else {
+		fmt.Fprintf(&b, "%dm", mins)
+	}
+	return b.String()
+}
+
 // ModelSwitched reports whether the model has changed to one with no cache
 // in the visible window. Requires a newest block to compare against: an
 // empty tail means "nothing known", which must keep the existing wall-clock
@@ -718,8 +757,8 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	scan := ScanTranscript(payload.TranscriptPath, currentModel)
 	// The TTL is Claude Code's own report, a measurement taken by the
 	// program that made the request. A payload without one (Claude Code
-	// older than 2.1.251, or no response yet) is shown as the 1h default,
-	// labelled as assumed.
+	// older than 2.1.251, or no response yet) shows the clock on the 1h
+	// default and names no TTL.
 	ttl := payload.ttlSeconds()
 
 	// Resolved before the state-file read so the "no messages yet" line
@@ -777,8 +816,9 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		if scan.CompactedAt != nil {
 			at = *scan.CompactedAt
 		}
-		fmt.Fprintf(stdout, "%s%scache: compacted at %s%s%s\n",
-			model, Green, at.In(tz).Format("15:04"), Reset, trailer)
+		fmt.Fprintf(stdout, "%s%s%scache: compacted%s %s%s / since %s%s%s\n",
+			model, Green, Bold, Reset,
+			Green, CompactedAgo(now.Sub(at).Seconds()), at.In(tz).Format("15:04"), Reset, trailer)
 		return
 	}
 
@@ -853,11 +893,16 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		} else {
 			label = Label(colour, detailBold, true)
 		}
-		lead := "cold by"
+		// No measured TTL, so no expiry time to forecast and no TTL to
+		// name: the clock and colour stay on the 1h default. Once the hour
+		// has passed the cache is cold on either TTL, so "since" is safe to
+		// show (a past time, at worst a few minutes out after hours of
+		// idling). Inside the hour any time would be a forecast on a
+		// guess, so none is shown. The TTL and the forecast come back with
+		// the next response that reports one.
 		if elapsed >= OneHourSeconds {
-			lead = "since"
+			eta = "since " + planExpiryLocal.Format("15:04")
 		}
-		eta = fmt.Sprintf("%s %s (1h TTL assumed)", lead, planExpiryLocal.Format("15:04"))
 	}
 
 	detailWeight := ""
@@ -868,7 +913,10 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	if label != "" {
 		heading = "cache: " + label
 	}
-	fmt.Fprintf(stdout, "%s%s%s%s%s %s%s%s / %s%s%s\n",
+	if eta != "" {
+		eta = " / " + eta
+	}
+	fmt.Fprintf(stdout, "%s%s%s%s%s %s%s%s%s%s%s\n",
 		model, colour, Bold, heading, Reset,
 		colour, detailWeight, elapsedClock, eta, Reset, trailer)
 }

@@ -40,7 +40,7 @@ payload, 2.1.251 and later) but not a countdown that starts at the moment a
 prompt is sent, and not the idle compaction deadline. So this takes the TTL
 from Claude Code and infers freshness from the time since the cache was last
 touched. Where the payload carries no TTL (an older Claude Code, or before the
-first response) it shows the one-hour default and says so: `(1h TTL assumed)`.
+first response) it shows the clock on the one-hour default and names no TTL and forecasts no expiry time; past the hour it adds `since HH:MM`, and the TTL and the forecast appear with the first response that reports one.
 
 ## What it does
 
@@ -235,11 +235,14 @@ fractions of five minutes would leave only a few seconds of warning.
 
 ## After a compaction
 
-Until your next message the cache segment reads `cache: compacted at 14:32`
-(your machine's time) with no clock. A compaction replaces the conversation
+Until your next message the cache segment reads
+`cache: compacted 12m / since 14:32` (your machine's time), in green, with the
+heading in bold. The age runs from `12m` through `5h05m` and `1w1d8h05m` up to
+`1y2mo3w4d5h06m` (`mo` is months, so `m` is only ever minutes); it is a
+running time since, not a countdown. A compaction replaces the conversation
 with a short summary, so the window is small and cheap to rebuild; the cache
-still warm behind it holds the conversation that was just replaced, so a clock
-counting it down would only look like a warning with nothing to act on. The
+still warm behind it holds the conversation that was just replaced, so a
+countdown would only look like a warning with nothing to act on. The
 context gauge is left out as well, because there is no figure until then. The
 next response brings the clock and the gauge back.
 
@@ -284,7 +287,7 @@ follows it:
   of `cold by HH:MM`.
 - **From about 49 minutes** the red label reads `compacting in 5m`, counting
   down, in place of `expiring`.
-- **After the compaction** the clock gives way to `compacted at HH:MM` until
+- **After the compaction** the clock gives way to `compacted <age> / since HH:MM` until
   your next message; see [After a compaction](#after-a-compaction).
 
 This is Claude Code behaviour, not an API guarantee, so the notice appears only
@@ -318,8 +321,8 @@ Three states, of which only two need anything from you:
 - **In paid overage** (5-minute TTL). Create the flag file below.
 - **Measured.** Always on underneath both. The TTL Claude Code reports in
   `prompt_cache.ttl` overrides whichever assumption is set. Without it the
-  flag file below decides, and with no flag file the one-hour default is
-  shown, labelled `(1h TTL assumed)`.
+  flag file below decides, and with no flag file the clock runs on the
+  one-hour default with no TTL named; `since HH:MM` appears once the hour has passed.
 
 ```sh
 touch ~/.claude/cache-ttl-overage-monitor.on   # 5-minute TTL
@@ -331,14 +334,11 @@ applies to your very next message.
 
 ## Status
 
-Treat this as private beta.
+Public, and under review for the official Claude Code plugin marketplace.
+The screenshots above are live output from the current build.
 
-The tracking and status-line logic is a Go rewrite of a Python
-implementation that saw real daily use, ported behaviour for behaviour, with
-an equivalent Go test for every case the old suite covered. The screenshots
-above are live output from the current build.
-
-Submitted to the official plugin marketplace and awaiting review.
+It began as a Python script for my own use and was rewritten in Go for the
+startup cost (see [Why Go](#install)); the two have long since diverged.
 
 **Known limitation.** The TTL is measured, but the clock is still elapsed
 time since the last prompt, tool call or turn end. Claude Code's

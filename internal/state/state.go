@@ -60,12 +60,10 @@ func SanitizeSessionID(raw string) string {
 	return cleaned
 }
 
-// Dir is this build's state directory. Deliberately distinct from any
-// sibling build's own directory (e.g. a "-dev" build): two independent
-// hooks reading-modifying-writing the same per-session file would race and
-// overwrite each other's fields.
+// Dir is the state directory. Each session has one file in it, written by
+// the hooks and read by the status line.
 func Dir(home string) string {
-	return filepath.Join(home, ".claude", "cache-ttl-track-core")
+	return filepath.Join(home, ".claude", "cache-ttl-tracker")
 }
 
 // OverageFlagPath is the touch-file that switches the assumed TTL from 1h
@@ -107,11 +105,9 @@ func Write(dir, path string, cs CacheState) {
 	_ = os.WriteFile(path, data, 0o644)
 }
 
-// FormatTimestamp matches Python's datetime.isoformat(timespec="seconds")
-// closely enough to round-trip: RFC3339's "Z07:00" element parses both a
-// literal "Z" (what this writes) and Python's "+00:00" (what an old state
-// file written by the retired Python build carries), so ParseTimestamp
-// reads either without a format migration.
+// FormatTimestamp writes RFC3339 in UTC with a literal "Z". RFC3339's
+// "Z07:00" element also parses the "+00:00" form, so ParseTimestamp reads
+// either.
 func FormatTimestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
