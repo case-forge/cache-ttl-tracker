@@ -36,12 +36,12 @@ running and the fetch is retried at most hourly.
 | The session transcript named in the hook payload | Reads the last 256 KiB only, for token counts and cache metadata. Contents are never copied, stored, or transmitted. |
 | `~/.claude/settings.json` | To detect whether the status line is configured, and to write that entry when you run `install`. |
 | `settings.json` / `settings.local.json` in the project's `.claude/` directory, and Claude Code's machine-wide managed settings file | Read by the status line on each refresh for exactly two keys: `idleCompaction` and `env.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`. Nothing else in them is decoded, kept or written anywhere. |
-| `~/.claude/cache-ttl-track-core/<session>.json` | Its own cache-touch timestamps. |
+| `~/.claude/cache-ttl-tracker/<session>.json` | Its own cache-touch timestamps. |
 | `~/.claude/cache-ttl-overage-monitor.on`, `~/.claude/cache-ttl-tracker-quiet` | Presence-only flag files. |
 
 **Files it writes**
 
-- Its own state under `~/.claude/cache-ttl-track-core/`, created `0755`,
+- Its own state under `~/.claude/cache-ttl-tracker/`, created `0755`,
   files `0644`, containing only a timestamp and a boolean.
 - Beside the dispatcher, in the plugin's `bin/`: the downloaded binary, a
   `<binary>.version` file holding the plugin version it was fetched for, and a

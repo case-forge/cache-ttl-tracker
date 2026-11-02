@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.0
+
+- **No TTL named until Claude Code reports one.** Without `prompt_cache.ttl`
+  the status line no longer says `(1h TTL assumed)` or forecasts a `cold by`
+  time from the guess. The clock and colours still run on the
+  one-hour default, and `since HH:MM` still appears once the hour has passed;
+  the TTL and the forecast return with the next response.
+- **After a compaction, how long ago.** The cache segment now reads
+  `cache: compacted 12:34 / since 14:32`, in green with a bold heading, and the
+  age keeps running instead of showing only the time. It shares its clock with
+  the cold state, which now also moves to days, weeks, months and years
+  (`1d0h00m` after 23h59m, `1w1d8h05m`, up to `1y2mo3w4d5h06m`) in place of
+  `200h05m`.
+
 ## 1.3.0
 
 The TTL comes from Claude Code, and a compaction no longer starts a clock.
