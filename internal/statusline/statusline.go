@@ -171,13 +171,14 @@ func (p Payload) modelID() string {
 // this thread's cache, so a small subagent must not read as "plenty of
 // room" moments before the main context fills.
 type ScanResult struct {
-	ContextTokens *int       // newest window size, any model; PostCompact or nil
-	NewestModel   string     // model on the newest usage block, whichever model that is
-	LastTouch     *time.Time // when CurrentModel last had a turn here
-	ReadTokens    int        // cache_read_input_tokens on CurrentModel's last turn
-	TurnRewrite   int        // largest single request this turn that re-wrote most of its context
-	CompactedAt   *time.Time // newest compaction summary, when it carries a timestamp
-	Version       string     // Claude Code version stamped on the newest record
+	ContextTokens *int        // newest window size, any model; PostCompact or nil
+	NewestModel   string      // model on the newest usage block, whichever model that is
+	LastTouch     *time.Time  // when CurrentModel last had a turn here
+	ReadTokens    int         // cache_read_input_tokens on CurrentModel's last turn
+	TurnRewrite   int         // largest single request this turn that re-wrote most of its context
+	CompactedAt   *time.Time  // newest compaction summary, when it carries a timestamp
+	Version       string      // Claude Code version stamped on the newest record
+	Limit         *LimitPause // usage-limit refusals newer than any served response
 }
 
 func readTail(transcriptPath string) (string, bool) {
@@ -284,6 +285,9 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 	// progress. Flips false at the first prompt older than this turn,
 	// which is what stops TurnRewrite reaching back into earlier turns.
 	withinTurn := true
+	// Whether a served response newer than the record in hand has been seen.
+	// Refusals older than one are history, not a pause.
+	served := false
 
 	lines := splitLines(tail)
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -342,8 +346,32 @@ func ScanTranscript(transcriptPath, currentModel string) ScanResult {
 			continue
 		}
 
-		total := inputKeysSum(usage)
 		model, _ := message["model"].(string)
+		if refusal, ok := limitRefusal(record); ok {
+			if !served {
+				if facts.Limit == nil {
+					facts.Limit = &refusal
+				}
+				facts.Limit.FirstRefusedAt = refusal.RefusedAt
+			}
+			continue
+		}
+		// Any other placeholder Claude Code writes for a failed request: no
+		// model answered, so it says nothing about the window or the cache.
+		if model == syntheticModel {
+			continue
+		}
+		if !served {
+			served = true
+			if facts.Limit != nil {
+				stamp, _ := record["timestamp"].(string)
+				if ts, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+					facts.Limit.ServedBefore = &ts
+				}
+			}
+		}
+
+		total := inputKeysSum(usage)
 		if facts.NewestModel == "" {
 			facts.NewestModel = model
 		}
@@ -766,6 +794,15 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		return
 	}
 
+	now := time.Now().UTC()
+
+	// A usage-limit pause: the hooks recorded touches for requests that were
+	// refused, so the clock goes back to the last response actually served.
+	pause := scan.Limit.Active(last, now)
+	if pause != nil {
+		last = pause.LastServed(last)
+	}
+
 	// A compaction the hooks did not see (the PreCompact hook has not been
 	// confirmed to fire for idle compaction) still shows in the transcript.
 	// It rewrites the window, so the clock restarts from it.
@@ -773,7 +810,6 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		last = *scan.CompactedAt
 	}
 
-	now := time.Now().UTC()
 	elapsed := now.Sub(last).Seconds()
 	elapsedClock := ElapsedClock(elapsed)
 	tz := displayTZ()
@@ -827,7 +863,10 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 		idleVersion = scan.Version
 	}
 	idle := DetectIdleCompaction(idleVersion, home, payload.workDir())
-	idleActive := idle.Armed(scan.ContextTokens, assumedTTL) && elapsed < IdleCompactAfterSeconds
+	idleArmed := idle.Armed(scan.ContextTokens, assumedTTL)
+	// No compaction is expected during a usage-limit pause: its request would
+	// be refused too. The plain clock tells the truth and the note says why.
+	idleActive := idleArmed && pause == nil && elapsed < IdleCompactAfterSeconds
 
 	if idleActive {
 		colour, detailBold, label, eta = IdleCompactView(elapsed, last, tz, postRedReminder)
@@ -900,6 +939,11 @@ func Run(stdin io.Reader, stdout io.Writer, home string) {
 	}
 	if eta != "" {
 		eta = " / " + eta
+	}
+	if pause != nil {
+		if note := pause.Note(now, tz, idleArmed, elapsed); note != "" {
+			eta += " / " + note
+		}
 	}
 	fmt.Fprintf(stdout, "%s%s%s%s%s %s%s%s%s%s%s\n",
 		model, colour, Bold, heading, Reset,
