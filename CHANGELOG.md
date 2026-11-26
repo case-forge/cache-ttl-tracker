@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.0
+
+A usage-limit pause is its own state.
+
+- **A message that could not be served no longer restarts the clock.** While
+  the plan's five-hour or weekly limit is refusing requests, the cache clock
+  runs from the last response that was actually served. Before, typing during
+  the pause showed the cache as warm when it was cooling or cold, and the first
+  request afterwards re-wrote the whole context unannounced.
+- **The line names the limit and its reset:** `5-hour limit until 00:00`,
+  `weekly limit until 09:00`, or `usage limit` when the record names neither.
+- **Idle compaction during a pause is reported.** No compaction can run while
+  requests are refused, so the `compacts HH:MM` forecast is withdrawn and the
+  line reads `idle compaction on hold`, then `idle compaction skipped` once the
+  54 minutes have passed.
+- A placeholder record for any other failed request is no longer read as the
+  session's newest model.
+
+See [During a usage limit](README.md#during-a-usage-limit).
+
 ## 1.4.0
 
 - **No TTL named until Claude Code reports one.** Without `prompt_cache.ttl`

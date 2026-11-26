@@ -56,4 +56,7 @@ fails without it, including the boundary values for any threshold.
   expiry time.
 - One clock (`ElapsedClock`) serves the cold and compacted segments; change
   it in one place.
+- A request refused by a usage limit is not a cache touch. The hooks cannot
+  tell, so `LimitPause` (read in the one tail scan) overrides their figure
+  while the newest response is a refusal. Do not move that into the hooks.
 - British English in prose.

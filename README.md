@@ -315,6 +315,33 @@ If Anthropic changes or removes the feature, the notice stops appearing and the
 ordinary clock is what remains. If the 54 minutes pass and no compaction
 follows, the ordinary clock resumes too, rather than guessing.
 
+## During a usage limit
+
+When the plan's five-hour or weekly allowance runs out, Claude Code refuses
+every request until the limit resets. A refused request never reaches the
+model, so it neither reads nor refreshes the cache, however many messages are
+typed in the meantime. The status line follows what was served, not what was
+sent:
+
+- **The clock keeps running from the last response that was actually served.**
+  A message sent during the pause does not restart it. If the pause outlasts
+  the TTL the line reads `cold`, which is what the first request afterwards
+  will pay for.
+- **The line names the limit and when it lifts:**
+  `cache: cold 1h10m / since 23:45 (1h TTL) / 5-hour limit until 00:00`.
+- **Idle compaction is reported, not assumed.** A compaction is a request too,
+  so none happens while the limit is in force. Where one was due, the line
+  adds `idle compaction on hold` until the 54 minutes are up and
+  `idle compaction skipped` after them, in place of the `compacts HH:MM`
+  forecast.
+- **Once the reset time has passed** the note goes and the true clock stays
+  until the next response is served.
+
+The pause is read from the transcript, where Claude Code records each refusal
+(`"apiError": "usage_limit_reached"`, with the limit and its reset time). That
+record is Claude Code's own format, not an API guarantee: if it changes, no
+pause is recognised and the clock behaves as it does without one.
+
 ## Which TTL you are on
 
 Getting this wrong is a trap in exactly one direction: assume 1 hour while
